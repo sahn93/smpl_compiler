@@ -111,7 +111,7 @@ class Lexer:
                     self.pos += len(val)
                     while self.pos < self.code_len and self.code[self.pos].isspace():
                         self.pos += 1
-                    return Token(pat, val, self.pos)
+                    return Token(pat, val.strip(), self.pos)
             else:
                 if remaining_code.startswith(pat):
                     self.pos += len(pat)
