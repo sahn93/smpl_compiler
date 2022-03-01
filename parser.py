@@ -107,7 +107,7 @@ class Lexer:
             if isinstance(pat, re.Pattern):
                 match = pat.match(remaining_code)
                 if match:
-                    val = match[0]
+                    val = match[0].strip()
                     self.pos += len(val)
                     while self.pos < self.code_len and self.code[self.pos].isspace():
                         self.pos += 1
