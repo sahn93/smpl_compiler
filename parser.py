@@ -10,21 +10,21 @@ class SmplLexerError(SyntaxError):
 
 
 class Token:
-    MAIN = 'main'
-    VOID = 'void'
-    FUNC = 'function'
-    LET = 'let'
-    CALL = 'call'
-    IF = 'if'
-    THEN = 'then'
-    ELSE = 'else'
+    MAIN = re.compile(r'main\s+')
+    VOID = re.compile(r'void\s+')
+    FUNC = re.compile(r'function\s+')
+    LET = re.compile(r'let\s+')
+    CALL = re.compile(r'call\s+')
+    IF = re.compile(r'if\s+')
+    THEN = re.compile(r'then\s+')
+    ELSE = re.compile(r'else\s+')
     FI = 'fi'
-    WHILE = 'while'
-    DO = 'do'
+    WHILE = re.compile(r'while\s+')
+    DO = re.compile(r'do\s+')
     OD = 'od'
-    RET = 'return'
-    VAR = 'var'
-    ARR = 'array'
+    RET = re.compile(r'return\s+')
+    VAR = re.compile(r'var\s+')
+    ARR = re.compile(r'array\s+')
     LPAREN = '('
     RPAREN = ')'
     LBRACE = '{'
@@ -133,7 +133,7 @@ class Parser:
         self.lookahead = self.lexer.next()
 
     @staticmethod
-    def error(self):
+    def error():
         raise SmplParserError
 
     def consume_if(self, *types):
