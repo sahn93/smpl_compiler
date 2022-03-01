@@ -128,7 +128,6 @@ class Parser:
         self.curr = self.lexer.next()
         self.lookahead = self.lexer.next()
 
-    @staticmethod
     def next(self):
         self.curr = self.lookahead
         self.lookahead = self.lexer.next()
@@ -143,7 +142,6 @@ class Parser:
         else:
             self.error()
 
-    @staticmethod
     def computation(self):
         var_table = {}
         func_table = {}
@@ -161,11 +159,9 @@ class Parser:
         self.consume_if(Token.RBRACE)
         self.consume_if(Token.PERIOD)
 
-    @staticmethod
-    def var_decl():
+    def var_decl(self):
         return None, None
 
-    @staticmethod
     def func_decl(self):
         return None, None
 
