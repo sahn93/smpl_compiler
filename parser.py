@@ -1,15 +1,16 @@
 import re
+from enum import Enum
 
 
-class SmplParserError(SyntaxError):
+class SmplParserError(Exception):
     pass
 
 
-class SmplLexerError(SyntaxError):
+class SmplLexerError(Exception):
     pass
 
 
-class Token:
+class Symbol(Enum):
     MAIN = re.compile(r'main\s+')
     VOID = re.compile(r'void\s+')
     FUNC = re.compile(r'function\s+')
@@ -48,48 +49,10 @@ class Token:
     IDENT = re.compile(r"[a-zA-Z][a-zA-Z0-9]*")
     NUMBER = re.compile(r"[0-9]+")
 
-    patterns = [
-        MAIN,
-        VOID,
-        FUNC,
-        LET,
-        CALL,
-        IF,
-        THEN,
-        ELSE,
-        FI,
-        WHILE,
-        DO,
-        OD,
-        RET,
-        VAR,
-        ARR,
-        LPAREN,
-        RPAREN,
-        LBRACE,
-        RBRACE,
-        LBRACKET,
-        RBRACKET,
-        PERIOD,
-        COMMA,
-        SEMICOLON,
-        LARROW,
-        EQ,
-        INEQ,
-        LT,
-        LE,
-        GT,
-        GE,
-        ASTERISK,
-        SLASH,
-        PLUS,
-        MINUS,
-        IDENT,
-        NUMBER,
-    ]
 
-    def __init__(self, token, string, pos):
-        self.token = token
+class Token:
+    def __init__(self, symbol, string, pos):
+        self.symbol = symbol
         self.string = string
         self.pos = pos
 
@@ -103,7 +66,8 @@ class Lexer:
 
     def next(self):
         remaining_code = self.code[self.pos:]
-        for pat in Token.patterns:
+        for symbol in Symbol:
+            pat = symbol.value
             if isinstance(pat, re.Pattern):
                 match = pat.match(remaining_code)
                 if match:
@@ -111,15 +75,15 @@ class Lexer:
                     self.pos += len(val)
                     while self.pos < self.code_len and self.code[self.pos].isspace():
                         self.pos += 1
-                    return Token(pat, val.strip(), self.pos)
+                    return Token(symbol, val.strip(), self.pos)
             else:
                 if remaining_code.startswith(pat):
                     self.pos += len(pat)
                     while self.pos < self.code_len and self.code[self.pos].isspace():
                         self.pos += 1
-                    return Token(pat, pat, self.pos)
+                    return Token(symbol, pat, self.pos)
 
-        raise SmplLexerError
+        raise SmplLexerError(len(self.code), remaining_code, self.pos)
 
 
 class Parser:
@@ -145,19 +109,19 @@ class Parser:
     def computation(self):
         var_table = {}
         func_table = {}
-        self.consume_if(Token.MAIN)
+        self.consume_if(Symbol.MAIN)
         self.next()
-        while self.lookahead.token in [Token.ARR, Token.VAR]:
+        while self.lookahead.token in [Symbol.ARR, Symbol.VAR]:
             var_id, val = self.var_decl()
             var_table[var_id] = val
-        while self.lookahead.token in [Token.VOID, Token.FUNC]:
+        while self.lookahead.token in [Symbol.VOID, Symbol.FUNC]:
             func_id, func = self.func_decl()
             func_table[func_id] = func
 
-        self.consume_if(Token.LBRACE)
+        self.consume_if(Symbol.LBRACE)
         self.statSequence()
-        self.consume_if(Token.RBRACE)
-        self.consume_if(Token.PERIOD)
+        self.consume_if(Symbol.RBRACE)
+        self.consume_if(Symbol.PERIOD)
 
     def var_decl(self):
         return None, None
