@@ -15,13 +15,10 @@ def main():
     args = parser.parse_args()
 
     smpl_parser = Parser(args.smpl)
-    while smpl_parser.lookahead.symbol != Symbol.PERIOD:
+    while smpl_parser.curr.symbol != Symbol.PERIOD:
         print(smpl_parser.curr.string, smpl_parser.curr.pos)
         smpl_parser.next()
-
-    print("Foo")
     print(smpl_parser.curr.string)
-    print(smpl_parser.lookahead.string)
 
 
 if __name__ == "__main__":

@@ -1,5 +1,6 @@
 import re
 from enum import Enum
+from ssa import *
 
 
 class SmplParserError(Exception):
@@ -23,9 +24,9 @@ class Symbol(Enum):
     WHILE = re.compile(r'while\s+')
     DO = re.compile(r'do\s+')
     OD = 'od'
-    RET = re.compile(r'return\s+')
+    RETURN = re.compile(r'return\s+')
     VAR = re.compile(r'var\s+')
-    ARR = re.compile(r'array\s+')
+    ARRAY = re.compile(r'array\s+')
     LPAREN = '('
     RPAREN = ')'
     LBRACE = '{'
@@ -83,51 +84,163 @@ class Lexer:
                         self.pos += 1
                     return Token(symbol, pat, self.pos)
 
-        raise SmplLexerError(len(self.code), remaining_code, self.pos)
+        raise SmplLexerError(self.pos, remaining_code)
 
 
 class Parser:
     def __init__(self, filepath):
         self.lexer = Lexer(filepath)
         self.curr = self.lexer.next()
-        self.lookahead = self.lexer.next()
+        self.root = BasicBlock(dict())  # init with empty value table.
+        self.curr_block = self.root
+
+    def parse(self):
+        self.computation()
+        return self.root
 
     def next(self):
-        self.curr = self.lookahead
-        self.lookahead = self.lexer.next()
+        self.curr = self.lexer.next()
 
     @staticmethod
-    def error():
-        raise SmplParserError
+    def error(msg: str):
+        raise SmplParserError(msg)
 
-    def consume_if(self, *types):
-        if self.curr in types:
+    def consume_if(self, *symbols: Symbol):
+        if self.curr in symbols:
+            consumed_token = self.curr
             self.next()
+            return consumed_token
         else:
-            self.error()
+            self.error(f"Expected {symbols}, got {self.curr.symbol}")
 
     def computation(self):
-        var_table = {}
-        func_table = {}
         self.consume_if(Symbol.MAIN)
-        self.next()
-        while self.lookahead.token in [Symbol.ARR, Symbol.VAR]:
-            var_id, val = self.var_decl()
-            var_table[var_id] = val
-        while self.lookahead.token in [Symbol.VOID, Symbol.FUNC]:
-            func_id, func = self.func_decl()
-            func_table[func_id] = func
+        while self.curr.symbol in [Symbol.VAR, Symbol.ARRAY]:
+            self.var_decl()
+
+        while self.curr.symbol in [Symbol.VOID, Symbol.FUNC]:
+            self.func_decl()
 
         self.consume_if(Symbol.LBRACE)
-        self.statSequence()
+        self.stat_sequence()
         self.consume_if(Symbol.RBRACE)
         self.consume_if(Symbol.PERIOD)
 
+    def stat_sequence(self):
+        self.statement()
+        while self.curr.symbol == Symbol.SEMICOLON:
+            self.consume_if(Symbol.SEMICOLON)
+            self.statement()
+        self.consume_if(Symbol.SEMICOLON)
+
+    def statement(self):
+        if self.curr.symbol == Symbol.LET:
+            return self.assignment()
+        elif self.curr.symbol == Symbol.CALL:
+            return self.func_call()
+        elif self.curr.symbol == Symbol.IF:
+            return self.if_statement()
+        elif self.curr.symbol == Symbol.WHILE:
+            return self.while_statement()
+        elif self.curr.symbol == Symbol.RETURN:
+            return self.return_statement()
+        else:
+            self.error(f"Expected statement, got {self.curr.symbol}")
+
+    def assignment(self):
+        self.consume_if(Symbol.LET)
+        ident, idx = self.designator()
+        self.consume_if(Symbol.LARROW)
+        rhs = self.expression()
+        if len(idx) == 0:
+            self.curr_block.sym_table[ident].value = rhs
+        else:
+            self.curr_block.sym_table[ident].value[idx] = rhs
+
     def var_decl(self):
-        return None, None
+        dim = self.type_decl()
+        self.curr_block.sym_table[self.ident()] = SSAVariable(dim)
+        while self.curr.symbol == Symbol.COMMA:
+            self.consume_if(Symbol.COMMA)
+            self.curr_block.sym_table[self.ident()] = SSAVariable(dim)
+        self.consume_if(Symbol.SEMICOLON)
+
+    def ident(self):
+        return self.consume_if(Symbol.IDENT).string
+
+    def number(self):
+        return int(self.consume_if(Symbol.NUMBER).string)
+
+    def type_decl(self):
+        type_token = self.consume_if(Symbol.VAR, Symbol.ARRAY)
+        dims = None
+        if type_token.symbol == Symbol.ARRAY:
+            dims = []
+            self.consume_if(Symbol.LBRACKET)
+            dims.append(self.number())
+            self.consume_if(Symbol.RBRACKET)
+            while self.curr.symbol == Symbol.LBRACKET:
+                self.consume_if(Symbol.LBRACKET)
+                dims.append(self.number())
+                self.consume_if(Symbol.RBRACKET)
+        return dims
 
     def func_decl(self):
+        is_void = False
+        if self.curr.symbol == Symbol.VOID:
+            is_void = True
+            self.consume_if(Symbol.VOID)
+        self.consume_if(Symbol.FUNC)
+        ident = self.ident()
+        params = self.formal_param()
+        self.consume_if(Symbol.SEMICOLON)
+        local_variables, stmts = self.func_body()
+        self.consume_if(Symbol.SEMICOLON)
+        # TODO: Declare a function node and return it
+        return ident, None
+
+    def func_body(self):
+        # TODO
         return None, None
+
+    def formal_param(self):
+        self.consume_if(Symbol.LPAREN)
+        params = [self.ident()]
+        while self.curr.symbol == Symbol.COMMA:
+            self.consume_if(Symbol.COMMA)
+            params.append(self.ident())
+        self.consume_if(Symbol.RPAREN)
+        return params
+
+    def func_call(self):
+        pass
+
+    def if_statement(self):
+        pass
+
+    def while_statement(self):
+        pass
+
+    def return_statement(self):
+        pass
+
+    def designator(self):
+        ident = self.consume_if(Symbol.IDENT)
+        idxs = []
+        while self.curr.symbol == Symbol.LBRACKET:
+            self.consume_if(Symbol.LBRACKET)
+            idxs.append(self.expression())
+            self.consume_if(Symbol.RBRACKET)
+        return ident, tuple(idxs)
+
+    def expression(self) -> SSAValue:
+        lhs = self.term()
+        while self.curr.symbol in [Symbol.PLUS, Symbol.MINUS]:
+            token = self.consume_if(Symbol.PLUS, Symbol.MINUS)
+            rhs = self.term()
+            self.compute(token.symbol, lhs, rhs)
+
+        return lhs
 
 
 """
