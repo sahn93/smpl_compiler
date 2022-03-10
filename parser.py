@@ -1,17 +1,17 @@
 import re
+from typing import List, Tuple, Dict, Optional
 from enum import Enum
+from functools import reduce
+import os
 import ssa
 
 
-class SmplParserError(Exception):
-    pass
-
-
 class SmplLexerError(Exception):
-    def __init__(self, code_lines, curr_row, curr_col):
-        line = code_lines[curr_row]
-        underlined = f"{line[:curr_col]}\033[4m{line[curr_col:]}\033[0m"
-        msg = f"Unexpected token at line {curr_row}: {underlined}"
+    def __init__(self, lexer):
+        line = lexer.code_lines[lexer.curr_row]
+        underlined = f"{lexer.filename} {lexer.curr_row}:{lexer.curr_col}" \
+                     f"   {line[:lexer.curr_col]}\033[4m{line[lexer.curr_col:]}\033[0m"
+        msg = f"\nUnexpected token at:\n{underlined}"
         super().__init__(msg)
 
 
@@ -71,11 +71,14 @@ class Lexer:
     def __init__(self, filepath):
         with open(filepath, 'r') as f:
             self.code_lines = f.readlines()
+        self.filename = os.path.basename(filepath)
         self.curr_row = 0
         self.curr_col = 0
 
-    def next(self):
+    def next(self) -> Optional[Token]:
         remaining_code = self.code_lines[self.curr_row][self.curr_col:]
+        if not remaining_code:
+            return None
         for lexeme in Lexeme:
             pat = lexeme.value
             if isinstance(pat, re.Pattern):
@@ -97,7 +100,16 @@ class Lexer:
                     self.curr_col += len(pat)
                     return token
 
-        raise SmplLexerError(self.code_lines, self.curr_row, self.curr_col)
+        raise SmplLexerError(self)
+
+
+class SmplParserError(Exception):
+    def __init__(self, lexer: Lexer, msg: str):
+        line = lexer.code_lines[lexer.curr_row]
+        underlined = f"{lexer.filename} {lexer.curr_row}:{lexer.curr_col}" \
+                     f"   {line[:lexer.curr_col]}\033[4m{line[lexer.curr_col:]}\033[0m"
+        msg = f"\n{underlined}{msg}"
+        super().__init__(msg)
 
 
 class Parser:
@@ -110,119 +122,122 @@ class Parser:
     def next(self):
         self.curr = self.lexer.next()
 
-    @staticmethod
-    def error(msg: str):
-        raise SmplParserError(msg)
+    def error(self, msg: str):
+        raise SmplParserError(self.lexer, msg)
 
     def parse(self):
         self.computation()
 
-    # def consume_if(self, *symbols: Lexeme):
-    #     if self.curr in symbols:
-    #         consumed_token = self.curr
-    #         self.next()
-    #         return consumed_token
-    #     else:
-    #         self.error(f"Expected {symbols}, got {self.curr.lexeme}")
-    #
-    # def computation(self) -> None:
-    #     self.consume_if(Lexeme.MAIN)
-    #     while self.curr.lexeme in [Lexeme.VAR, Lexeme.ARRAY]:
-    #         self.var_decl()
-    #
-    #     while self.curr.lexeme in [Lexeme.VOID, Lexeme.FUNC]:
-    #         self.func_decl()
-    #
-    #     self.consume_if(Lexeme.LBRACE)
-    #     self.stat_sequence()
-    #     self.consume_if(Lexeme.RBRACE)
-    #     self.consume_if(Lexeme.PERIOD)
-    #
-    # def stat_sequence(self):
-    #     self.statement()
-    #     while self.curr.lexeme == Lexeme.SEMICOLON:
-    #         self.consume_if(Lexeme.SEMICOLON)
-    #         self.statement()
-    #     self.consume_if(Lexeme.SEMICOLON)
-    #
-    # def statement(self):
-    #     if self.curr.lexeme == Lexeme.LET:
-    #         return self.assignment()
-    #     elif self.curr.lexeme == Lexeme.CALL:
-    #         return self.func_call()
-    #     elif self.curr.lexeme == Lexeme.IF:
-    #         return self.if_statement()
-    #     elif self.curr.lexeme == Lexeme.WHILE:
-    #         return self.while_statement()
-    #     elif self.curr.lexeme == Lexeme.RETURN:
-    #         return self.return_statement()
-    #     else:
-    #         self.error(f"Expected statement, got {self.curr.lexeme}")
-    #
-    # def assignment(self):
-    #     self.consume_if(Lexeme.LET)
-    #     ident, idx = self.designator()
-    #     self.consume_if(Lexeme.LARROW)
-    #     rhs = self.expression()
-    #     if len(idx) == 0:
-    #         self.curr_basicblock.sym_table[ident].value = rhs
-    #     else:
-    #         self.curr_basicblock.sym_table[ident].value[idx] = rhs
-    #
-    # def var_decl(self):
-    #     dim = self.type_decl()
-    #     self.curr_basicblock.sym_table[self.ident()] = Variable(dim)
-    #     while self.curr.lexeme == Lexeme.COMMA:
-    #         self.consume_if(Lexeme.COMMA)
-    #         self.curr_basicblock.sym_table[self.ident()] = Variable(dim)
-    #     self.consume_if(Lexeme.SEMICOLON)
-    #
-    # def ident(self):
-    #     return self.consume_if(Lexeme.IDENT).value
-    #
-    # def number(self):
-    #     return int(self.consume_if(Lexeme.NUMBER).value)
-    #
-    # def type_decl(self):
-    #     type_token = self.consume_if(Lexeme.VAR, Lexeme.ARRAY)
-    #     dims = None
-    #     if type_token.lexeme == Lexeme.ARRAY:
-    #         dims = []
-    #         self.consume_if(Lexeme.LBRACKET)
-    #         dims.append(self.number())
-    #         self.consume_if(Lexeme.RBRACKET)
-    #         while self.curr.lexeme == Lexeme.LBRACKET:
-    #             self.consume_if(Lexeme.LBRACKET)
-    #             dims.append(self.number())
-    #             self.consume_if(Lexeme.RBRACKET)
-    #     return dims
-    #
-    # def func_decl(self):
-    #     is_void = False
-    #     if self.curr.lexeme == Lexeme.VOID:
-    #         is_void = True
-    #         self.consume_if(Lexeme.VOID)
-    #     self.consume_if(Lexeme.FUNC)
-    #     ident = self.ident()
-    #     params = self.formal_param()
-    #     self.consume_if(Lexeme.SEMICOLON)
-    #     local_variables, stmts = self.func_body()
-    #     self.consume_if(Lexeme.SEMICOLON)
-    #     # TODO: Declare a function node and return it
-    #     return ident, None
-    #
-    # def func_body(self):
-    #     # TODO
-    #     return None, None
-    #
-    # def formal_param(self):
-    #     self.consume_if(Lexeme.LPAREN)
-    #     params = [self.ident()]
-    #     while self.curr.lexeme == Lexeme.COMMA:
-    #         self.consume_if(Lexeme.COMMA)
-    #         params.append(self.ident())
-    #     self.consume_if(Lexeme.RPAREN)
-    #     return params
+    def consume_if(self, *lexemes: Lexeme) -> Token:
+        if self.curr.lexeme in lexemes:
+            consumed_token = self.curr
+            self.next()
+            return consumed_token
+        else:
+            self.error(f"Expected {lexemes}, got {self.curr.lexeme}")
+
+    def computation(self) -> None:
+        main_func = self.ir.get_new_function_block("main")
+        self.ir.set_current_block(main_func)
+
+        self.consume_if(Lexeme.MAIN)
+        while self.curr.lexeme in [Lexeme.VAR, Lexeme.ARRAY]:
+            self.var_decl()
+        while self.curr.lexeme in [Lexeme.VOID, Lexeme.FUNC]:
+            self.func_decl()
+        self.consume_if(Lexeme.LBRACE)
+        self.stat_sequence()
+        self.consume_if(Lexeme.RBRACE)
+        self.consume_if(Lexeme.PERIOD)
+
+    def stat_sequence(self):
+        self.statement()
+        while self.curr.lexeme == Lexeme.SEMICOLON:
+            self.consume_if(Lexeme.SEMICOLON)
+            self.statement()
+        if self.curr.lexeme == Lexeme.SEMICOLON:
+            self.consume_if(Lexeme.SEMICOLON)
+
+    def statement(self):
+        if self.curr.lexeme == Lexeme.LET:
+            return self.assignment()
+        elif self.curr.lexeme == Lexeme.CALL:
+            return self.func_call()
+        # elif self.curr.lexeme == Lexeme.IF:
+        #     return self.if_statement()
+        # elif self.curr.lexeme == Lexeme.WHILE:
+        #     return self.while_statement()
+        # elif self.curr.lexeme == Lexeme.RETURN:
+        #     return self.return_statement()
+        else:
+            self.error(f"Expected statement, got {self.curr.lexeme}")
+
+    def assignment(self) -> None:
+        self.consume_if(Lexeme.LET)
+        lhs_var, lhs = self.designator()
+        self.consume_if(Lexeme.LARROW)
+        rhs = self.expression()
+        if lhs_var.dims is None:    # Integer, update the value of the symbol table
+            lhs_var.operand = rhs
+        else:   # Array, lhs is an address, store rhs in the address.
+            self.ir.current_block.emit(ssa.Operation.STORE, rhs, lhs)
+
+    def var_decl(self) -> None:
+        """
+        Add global variables to the main block's symbol table.
+        :return: None
+        """
+        dims = self.type_decl()
+        self.ir.current_block.decl_var(self.ident(), dims)
+        while self.curr.lexeme == Lexeme.COMMA:
+            self.consume_if(Lexeme.COMMA)
+            self.ir.current_block.decl_var(self.ident(), dims)
+        self.consume_if(Lexeme.SEMICOLON)
+
+    def ident(self) -> str:
+        return self.consume_if(Lexeme.IDENT).value
+
+    def number(self) -> int:
+        return int(self.consume_if(Lexeme.NUMBER).value)
+
+    def type_decl(self) -> Optional[List[int]]:
+        type_token = self.consume_if(Lexeme.VAR, Lexeme.ARRAY)
+        dims = None
+        if type_token.lexeme == Lexeme.ARRAY:
+            dims = []
+            self.consume_if(Lexeme.LBRACKET)
+            dims.append(self.number())
+            self.consume_if(Lexeme.RBRACKET)
+            while self.curr.lexeme == Lexeme.LBRACKET:
+                self.consume_if(Lexeme.LBRACKET)
+                dims.append(self.number())
+                self.consume_if(Lexeme.RBRACKET)
+        return dims
+
+    def func_decl(self) -> None:
+        is_void = False
+        if self.curr.lexeme == Lexeme.VOID:
+            is_void = True
+            self.consume_if(Lexeme.VOID)
+        self.consume_if(Lexeme.FUNC)
+        ident = self.ident()
+        params = self.formal_param()
+        self.consume_if(Lexeme.SEMICOLON)
+        local_variables, stmts = self.func_body()
+        self.consume_if(Lexeme.SEMICOLON)
+
+    def func_body(self):
+        # TODO
+        return None, None
+
+    def formal_param(self):
+        self.consume_if(Lexeme.LPAREN)
+        params = [self.ident()]
+        while self.curr.lexeme == Lexeme.COMMA:
+            self.consume_if(Lexeme.COMMA)
+            params.append(self.ident())
+        self.consume_if(Lexeme.RPAREN)
+        return params
     #
     # def if_statement(self):
     #     pass
@@ -232,62 +247,84 @@ class Parser:
     #
     # def return_statement(self):
     #     pass
-    #
-    # def designator(self):
-    #     ident = self.consume_if(Lexeme.IDENT)
-    #     idxs = []
-    #     while self.curr.lexeme == Lexeme.LBRACKET:
-    #         self.consume_if(Lexeme.LBRACKET)
-    #         idxs.append(self.expression())
-    #         self.consume_if(Lexeme.RBRACKET)
-    #     return ident.value, tuple(idxs)
-    #
-    # def expression(self):
-    #     lhs = self.term()
-    #     while self.curr.lexeme in [Lexeme.PLUS, Lexeme.MINUS]:
-    #         token = self.consume_if(Lexeme.PLUS, Lexeme.MINUS)
-    #         rhs = self.term()
-    #         self.compute(token.lexeme, lhs, rhs)
-    #     return lhs
-    #
-    # def term(self):
-    #     lhs = self.factor()
-    #     while self.curr.lexeme in [Lexeme.ASTERISK, Lexeme.SLASH]:
-    #         token = self.consume_if(Lexeme.ASTERISK, Lexeme.SLASH)
-    #         rhs = self.term()
-    #         self.compute(token.lexeme, lhs, rhs)
-    #     return lhs
-    #
-    # def factor(self):
-    #     if self.curr.lexeme == Lexeme.IDENT:
-    #         operand = self.curr_basicblock.sym_table[self.curr.value]
-    #     elif self.curr.lexeme == Lexeme.NUMBER:
-    #         operand = ImmediateOp(self.number())
-    #     elif self.curr.lexeme == Lexeme.LPAREN:
-    #         self.consume_if(Lexeme.LPAREN)
-    #         operand = self.expression()
-    #         self.consume_if(Lexeme.RPAREN)
-    #     elif self.curr.lexeme == Lexeme.CALL:
-    #         operand = self.func_call()
-    #     return operand
-    #
-    # def func_call(self) -> Operand:
-    #     self.consume_if(Lexeme.CALL)
-    #     ident = self.consume_if(Lexeme.IDENT)
-    #     operands = []
-    #     if self.curr.lexeme == Lexeme.LPAREN:
-    #         self.consume_if(Lexeme.LPAREN)
-    #         operands.append(self.expression())
-    #         while self.curr.lexeme == Lexeme.COMMA:
-    #             self.consume_if(Lexeme.COMMA)
-    #             operands.append(self.expression())
-    #         self.consume_if(Lexeme.RPAREN)
-    #     return FuncCallOP(ident.value, operands)
-    #
-    #
-    # def compute(self, symbol, lhs, rhs):
-    #     pass
 
+    def designator(self) -> Tuple[ssa.Variable, ssa.Operand]:
+        ident = self.consume_if(Lexeme.IDENT)
+        var = self.ir.current_block.sym_table[ident.value]
+        # operand: None (uninitialized int) or InstructionOp (initialized int) or VarAddressOp (array)
+        operand = var.operand
+        idx_pos = 0
+        while self.curr.lexeme == Lexeme.LBRACKET:
+            idx_pos += 1
+            self.consume_if(Lexeme.LBRACKET)
+            idx_op = self.expression()
+            # Calculate offset for this index
+            if idx_op != ssa.ImmediateOp(0):
+                offset_mul_op = self.ir.current_block.emit(
+                    ssa.Operation.MUL, idx_op, reduce(lambda a, b: a*b, var.dims[idx_pos:]))
+                operand = self.ir.current_block.emit(ssa.Operation.ADDA, operand, offset_mul_op)
+            self.consume_if(Lexeme.RBRACKET)
+        return var, operand
+
+    def expression(self) -> ssa.Operand:
+        lhs = self.term()
+        while self.curr.lexeme in [Lexeme.PLUS, Lexeme.MINUS]:
+            token = self.consume_if(Lexeme.PLUS, Lexeme.MINUS)
+            rhs = self.term()
+            if token.lexeme == Lexeme.PLUS:
+                lhs = self.ir.current_block.emit(ssa.Operation.ADD, lhs, rhs)
+            elif token.lexeme == Lexeme.MINUS:
+                lhs = self.ir.current_block.emit(ssa.Operation.SUB, lhs, rhs)
+        return lhs
+
+    def term(self) -> ssa.Operand:
+        lhs = self.factor()
+        while self.curr.lexeme in [Lexeme.ASTERISK, Lexeme.SLASH]:
+            token = self.consume_if(Lexeme.ASTERISK, Lexeme.SLASH)
+            rhs = self.factor()
+            if token.lexeme == Lexeme.ASTERISK:
+                lhs = self.ir.current_block.emit(ssa.Operation.MUL, lhs, rhs)
+            elif token.lexeme == Lexeme.SLASH:
+                lhs = self.ir.current_block.emit(ssa.Operation.DIV, lhs, rhs)
+        return lhs
+
+    def factor(self) -> ssa.Operand:
+        if self.curr.lexeme == Lexeme.IDENT:
+            _, operand = self.designator()
+        elif self.curr.lexeme == Lexeme.NUMBER:
+            operand = ssa.ImmediateOp(self.number())
+        elif self.curr.lexeme == Lexeme.LPAREN:
+            self.consume_if(Lexeme.LPAREN)
+            operand = self.expression()
+            self.consume_if(Lexeme.RPAREN)
+        elif self.curr.lexeme == Lexeme.CALL:
+            operand = self.func_call()
+        else:
+            raise SmplParserError
+        return operand
+
+    def func_call(self) -> ssa.Operand:
+        self.consume_if(Lexeme.CALL)
+        ident = self.consume_if(Lexeme.IDENT)
+        operands = []
+
+        if self.curr.lexeme == Lexeme.LPAREN:
+            self.consume_if(Lexeme.LPAREN)
+            if self.curr.lexeme != Lexeme.RPAREN:   # Parse func params
+                operands.append(self.expression())
+                while self.curr.lexeme == Lexeme.COMMA:
+                    self.consume_if(Lexeme.COMMA)
+                    operands.append(self.expression())
+            self.consume_if(Lexeme.RPAREN)
+
+        if ident.value == "InputNum":
+            return self.ir.current_block.emit(ssa.Operation.READ)
+        elif ident.value == "OutputNum":
+            return self.ir.current_block.emit(ssa.Operation.WRITE, *operands)
+        elif ident.value == "OutputNewLine":
+            return self.ir.current_block.emit(ssa.Operation.WRITE_NL)
+
+        return ssa.FuncCallOp(self.ir, ident.value, *operands)
 
 """
 main

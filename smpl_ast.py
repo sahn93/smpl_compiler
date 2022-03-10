@@ -3,15 +3,18 @@ import ssa
 
 
 class ASTNode:
+    def __init__(self, ir: ssa.SSA):
+        self.compile(ir)    # Parse and compile at the same time
+
     def compile(self, ir: ssa.SSA):
         raise NotImplementedError
 
 
 class Computation(ASTNode):
-    def __init__(self, vars, funcs, stmts):
-        self.vars = vars
+    def __init__(self, funcs, stmts, ir: ssa.SSA):
         self.funcs = funcs
         self.stmts = stmts
+        super().__init__(ir)
 
     def compile(self, ir: ssa.SSA) -> None:
         main_func = ir.get_new_function_block("main")
@@ -38,5 +41,4 @@ class FunctionCall(ASTNode):
         arg_operands = []
         for arg_expr in self.arg_exprs:
             arg_operands.append(arg_expr.compile(ir))
-
-        ir.current_block.emit(ssa.Operation.CALL, ssa.FuncCallOp(self.ident, *arg_operands, ir))
+        ir.current_block.emit(ssa.Operation.CALL, ssa.FuncCallOp(ir, self.ident, *arg_operands))

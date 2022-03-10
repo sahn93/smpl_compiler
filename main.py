@@ -4,7 +4,6 @@ from parser import Parser
 from ssa import SSA
 
 
-
 class Result:
     def __init__(self, kind, val):
         self.kind = kind
@@ -19,13 +18,7 @@ def main():
     ir = SSA()
     smpl_parser = Parser(args.smpl, ir)
 
-    # Test Lexer
-    # while smpl_parser.curr.lexeme != Lexeme.PERIOD:
-    #     print(smpl_parser.curr.value, smpl_parser.curr.row, smpl_parser.curr.col)
-    #     smpl_parser.next()
-    # print(smpl_parser.curr.value)
-
-    # smpl_parser.parse()
+    smpl_parser.parse()
     print(ir.dot())
 
 
