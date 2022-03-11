@@ -1,7 +1,7 @@
 from typing import List, Tuple, Dict, DefaultDict, Optional
 from enum import Enum
 from collections import defaultdict
-from copy import deepcopy
+from copy import copy
 import warnings
 
 
@@ -153,7 +153,9 @@ class BasicBlock:
         self.branch_block: Optional[BasicBlock] = None
         self.fall_through_block: Optional[BasicBlock] = None
         self.dominates: List[BasicBlock] = []
-        self.sym_table: Dict[str, Optional[Variable]] = deepcopy(sym_table)
+        self.sym_table: Dict[str, Optional[Variable]] = {}
+        for ident, var in sym_table.items():
+            self.sym_table[ident] = copy(var)
         self.instr_dominators: DefaultDict[Operation, List[Instruction]] = instr_dominators.copy()
 
     def decl_var(self, ident: str, dims: Optional[List[int]] = None):

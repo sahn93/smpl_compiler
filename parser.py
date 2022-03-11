@@ -299,7 +299,7 @@ class Parser:
 
             rhs_block = orig_block  # Set rhs block for phi function
 
-        # Move and compile join block
+        # Move to join block and add phi functions
         self.ir.set_current_block(join_block)
         # Add phi functions for modified variables
         for ident, var in join_block.sym_table.items():
@@ -341,7 +341,6 @@ class Parser:
     #
     # def return_statement(self):
     #     pass
-
 
     def expression(self) -> ssa.Operand:
         lhs = self.term()
