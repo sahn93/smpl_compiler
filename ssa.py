@@ -1,6 +1,7 @@
 from typing import List, Tuple, Dict, DefaultDict, Optional
 from enum import Enum
 from collections import defaultdict
+from copy import deepcopy
 import warnings
 
 
@@ -10,6 +11,13 @@ class SSACompileError(Exception):
 
 class UninitializedVariableWarning(UserWarning):
     pass
+
+
+class BasicBlockType(Enum):
+    FUNC_ROOT = "root"
+    FALL_THROUGH = "fall-through",
+    BRANCH = "branch",
+    JOIN = "join"
 
 
 class Operation(Enum):
@@ -41,6 +49,17 @@ class Operand:
     pass
 
 
+class BasicBlockOp(Operand):
+    def __init__(self, block_id: int):
+        self.block_id = block_id
+
+    def __str__(self):
+        return f"BB{self.block_id}"
+
+    def __eq__(self, other):
+        return isinstance(other, BasicBlockOp) and self.block_id == other.block_id
+
+
 class VarAddressOp(Operand):
     def __init__(self, ident: str):
         self.name = ident
@@ -64,15 +83,17 @@ class ImmediateOp(Operand):
 
 
 class Instruction:
-    def __init__(self, i: int, operation: Operation, *operands: Operand):
+    def __init__(self, i: int, operation: Optional[Operation], *operands: Operand):
         self.i: int = i
         self.instr_op = InstructionOp(self)
         self.operation: Operation = operation
-        self.operands: Tuple[Operand] = operands
+        self.operands: List[Operand] = list(operands)
         self.dominator: Optional[Instruction] = None  # Previous instruction with the same kind
 
     def __str__(self):
-        if self.operation == Operation.CALL:
+        if self.operation is None:
+            return f"{self.i}: <empty>"
+        elif self.operation == Operation.CALL:
             return f"{self.i}: {str(self.operands[0])}"  # Operand is always a FuncCallOp.
         else:
             return f"{self.i}: {self.operation.value} {' '.join([str(op) for op in self.operands])}"
@@ -115,18 +136,24 @@ class Variable:
         self.operand = operand
         self.dims = dims
 
+    def __eq__(self, other):
+        return isinstance(other, Variable) and self.operand == other.operand
+
 
 class BasicBlock:
-    def __init__(self, func: Function, sym_table: Dict[str, Optional[Variable]],
-                 instr_dominators: DefaultDict[Operation, List[Instruction]]):
+    def __init__(self,
+                 func: Function,
+                 sym_table: Dict[str, Optional[Variable]],
+                 instr_dominators: DefaultDict[Operation, List[Instruction]],
+                 basicblock_type: BasicBlockType):
+        self.type = basicblock_type
         self.func: Function = func
         self.basic_block_id: int = func.get_basic_block_id()
         self.instrs: List[Instruction] = []
-        self.branch: Optional[BasicBlock] = None
-        self.fall_through: Optional[BasicBlock] = None
-        self.is_join_block: bool = False
+        self.branch_block: Optional[BasicBlock] = None
+        self.fall_through_block: Optional[BasicBlock] = None
         self.dominates: List[BasicBlock] = []
-        self.sym_table: Dict[str, Optional[Variable]] = sym_table.copy()
+        self.sym_table: Dict[str, Optional[Variable]] = deepcopy(sym_table)
         self.instr_dominators: DefaultDict[Operation, List[Instruction]] = instr_dominators.copy()
 
     def decl_var(self, ident: str, dims: Optional[List[int]] = None):
@@ -155,43 +182,45 @@ class BasicBlock:
             subgraph_prefix = f"subgraph{subgraph_id}_"
 
         bfs_frontiers = [self]
-        bfs_nodes = set()
+        bfs_visited = set()
 
         while bfs_frontiers:
             node = bfs_frontiers.pop()
-            bfs_nodes.add(node)
-            if self.fall_through:
-                bfs_frontiers.append(self.fall_through)
-            if self.branch:
-                bfs_frontiers.append(self.branch)
+            bfs_visited.add(node)
+            if node.branch_block and node.branch_block not in bfs_visited:
+                bfs_frontiers.append(node.branch_block)
+            if node.fall_through_block and node.fall_through_block not in bfs_visited:
+                bfs_frontiers.append(node.fall_through_block)
 
         dotgraph_blocks = []
         dotgraph_branches = []
         dotgraph_doms = []
 
-        for node in bfs_nodes:
+        for node in sorted(list(bfs_visited), key=lambda x: x.basic_block_id):
             dot_block, dot_branches, dot_doms = node.dot_node(subgraph_prefix)
             dotgraph_blocks.append(dot_block)
             dotgraph_branches += dot_branches
             dotgraph_doms += dot_doms
 
-        return dotgraph_blocks + dotgraph_branches + dotgraph_doms
+        return dotgraph_blocks + [''] + dotgraph_branches + dotgraph_doms
 
     def dot_node(self, subgraph_prefix: str = ""):
-        join = "join\n" if self.is_join_block else ""
+        join = "join\\n" if self.type == BasicBlockType.JOIN else ""
         instrs = "|".join([str(instr) for instr in self.instrs])
         label = f"<b>{join}BB{self.basic_block_id}| {{{instrs}}}"
         dot_block = f'\t{subgraph_prefix}bb{self.basic_block_id} [shape=record, label="{label}"];'
 
         dot_branches = []
 
-        if self.fall_through:
+        if self.fall_through_block:
             dot_branches.append(f'{subgraph_prefix}bb{self.basic_block_id}:s'
-                                f' -> {subgraph_prefix}bb{self.fall_through}:n [label="fall-through"];')
+                                f' -> {subgraph_prefix}bb{self.fall_through_block.basic_block_id}:n'
+                                f' [label="fall-through"];')
 
-        if self.branch:
+        if self.branch_block:
             dot_branches.append(f'{subgraph_prefix}bb{self.basic_block_id}:s'
-                                f' -> {subgraph_prefix}bb{self.branch}:n [label="branch"];')
+                                f' -> {subgraph_prefix}bb{self.branch_block.basic_block_id}:n'
+                                f' [label="branch"];')
 
         dot_doms = []
         for dom in self.dominates:
@@ -200,23 +229,25 @@ class BasicBlock:
 
         return dot_block, dot_branches, dot_doms
 
-    def emit(self, operation: Operation, *operands: Operand) -> InstructionOp:
+    def emit(self, operation: Optional[Operation], *operands: Operand) -> InstructionOp:
         instr = Instruction(self.func.get_instr_id(), operation, *operands)
 
         # Common Subexpression Elimination
-        for dom_instr in reversed(self.instr_dominators[operation]):
-            if dom_instr.operation == Operation.STORE:
-                break   # For load operation to forget everything before the store operation
-            if instr == dom_instr:
-                self.func.instr_counter -= 1
-                return dom_instr.instr_op
+        if operation is not None:
+            for dom_instr in reversed(self.instr_dominators[operation]):
+                if dom_instr.operation == Operation.STORE:
+                    break  # For load operation to forget everything before the store operation
+                if instr == dom_instr:
+                    self.func.instr_counter -= 1
+                    return dom_instr.instr_op
 
+        # There is no common subexpression.
         self.instrs.append(instr)
+        self.instr_dominators[operation].append(instr)
         if operation == Operation.STORE:
-            # Add store operation to the load's tree
+            # Add store operation to the load's tree as well
             self.instr_dominators[Operation.LOAD].append(instr)
-        else:
-            self.instr_dominators[operation].append(instr)
+
         return instr.instr_op
 
 
@@ -227,23 +258,45 @@ class SSA:
         self.func_roots: Dict[str, BasicBlock] = dict()
         self.builtin_funcs: List[str] = ["InputNum", "OutputNum", "OutputNewLine"]
         # Add built-in functions
-        read_block = self.get_new_function_block("InputNum")
-        read_block.emit(Operation.READ)
-        write_block = self.get_new_function_block("OutputNum", 1)
-        write_block.emit(Operation.WRITE, VarAddressOp("x"))
-        output_nl_block = self.get_new_function_block("OutputNewLine")
-        output_nl_block.emit(Operation.WRITE_NL)
+        self.get_new_function_block("InputNum")
+        self.emit(Operation.READ)
+        self.get_new_function_block("OutputNum", 1)
+        self.emit(Operation.WRITE, VarAddressOp("x"))
+        self.get_new_function_block("OutputNewLine")
+        self.emit(Operation.WRITE_NL)
+
+    def emit(self, operation: Optional[Operation], *operands: Operand) -> InstructionOp:
+        return self.current_block.emit(operation, *operands)
 
     def set_current_block(self, block: BasicBlock):
         self.current_block = block
 
     def get_new_function_block(self, name: str, num_operands: int = 0) -> BasicBlock:
-        func_root_bb = BasicBlock(Function(name, num_operands), dict(), defaultdict(list))
+        """
+        Create a new function and a root basic block.
+        A function has a separated control flow graph and the new block becomes the root node.
+        It automatically set the current function as the new function.
+        :param name:
+        :param num_operands:
+        :return: Root basic block for the new function.
+        """
+        func = Function(name, num_operands)
+        func_root_bb = BasicBlock(func, dict(), defaultdict(list), BasicBlockType.FUNC_ROOT)
         self.func_roots[name] = func_root_bb
+        self.current_func = func
+        self.current_block = func_root_bb
         return func_root_bb
 
-    def get_new_basicblock(self):
-        return BasicBlock(self.current_func, self.current_block.sym_table, self.current_block.instr_dominators)
+    def get_new_basicblock(self,
+                           basicblock_type: BasicBlockType):
+        new_bb = BasicBlock(self.current_func, self.current_block.sym_table,
+                            self.current_block.instr_dominators, basicblock_type)
+        if basicblock_type == BasicBlockType.FALL_THROUGH:
+            self.current_block.fall_through_block = new_bb
+        elif basicblock_type == BasicBlockType.BRANCH:
+            self.current_block.branch_block = new_bb
+        self.current_block.dominates.append(new_bb)
+        return new_bb
 
     def dot(self) -> str:
         dot_lines = ["digraph G {"]

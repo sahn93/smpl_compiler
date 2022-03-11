@@ -41,12 +41,7 @@ class Lexeme(Enum):
     COMMA = ','
     SEMICOLON = ';'
     LARROW = '<-'
-    EQ = '=='
-    INEQ = '!='
-    LT = '<'
-    LE = '<='
-    GT = '>'
-    GE = '>='
+    REL_OP = re.compile(r'==|!=|<=|<|>=|>')
     ASTERISK = '*'
     SLASH = '/'
     PLUS = '+'
@@ -162,14 +157,32 @@ class Parser:
             return self.assignment()
         elif self.curr.lexeme == Lexeme.CALL:
             return self.func_call()
-        # elif self.curr.lexeme == Lexeme.IF:
-        #     return self.if_statement()
+        elif self.curr.lexeme == Lexeme.IF:
+            return self.if_statement()
         # elif self.curr.lexeme == Lexeme.WHILE:
         #     return self.while_statement()
         # elif self.curr.lexeme == Lexeme.RETURN:
         #     return self.return_statement()
         else:
             self.error(f"Expected statement, got {self.curr.lexeme}")
+
+    def designator(self) -> Tuple[ssa.Variable, ssa.Operand]:
+        ident = self.consume_if(Lexeme.IDENT)
+        var = self.ir.current_block.sym_table[ident.value]
+        # operand: None (uninitialized int) or InstructionOp (initialized int) or VarAddressOp (array)
+        operand = var.operand
+        idx_pos = 0
+        while self.curr.lexeme == Lexeme.LBRACKET:
+            idx_pos += 1
+            self.consume_if(Lexeme.LBRACKET)
+            idx_op = self.expression()
+            # Calculate offset for this index
+            if idx_op != ssa.ImmediateOp(0):
+                offset_mul_op = self.ir.emit(
+                    ssa.Operation.MUL, idx_op, reduce(lambda a, b: a*b, var.dims[idx_pos:]))
+                operand = self.ir.emit(ssa.Operation.ADDA, operand, offset_mul_op)
+            self.consume_if(Lexeme.RBRACKET)
+        return var, operand
 
     def assignment(self) -> None:
         self.consume_if(Lexeme.LET)
@@ -237,33 +250,98 @@ class Parser:
             params.append(self.ident())
         self.consume_if(Lexeme.RPAREN)
         return params
-    #
-    # def if_statement(self):
-    #     pass
-    #
+
+    def if_statement(self) -> None:
+        self.consume_if(Lexeme.IF)
+        # Create 3 Basic Blocks
+        orig_block = self.ir.current_block
+        fall_through_block = self.ir.get_new_basicblock(ssa.BasicBlockType.FALL_THROUGH)
+
+        # emit incomplete branch instruction to the original block
+        cond_branch_op = self.relation()  # Second operand is not added yet
+        self.consume_if(Lexeme.THEN)
+
+        # Move and compile fall-through block
+        self.ir.set_current_block(fall_through_block)
+        self.stat_sequence()
+        join_branch_op = self.ir.emit(ssa.Operation.BRA)  # Branch operand is not added yet
+        self.ir.set_current_block(orig_block)
+
+        # Move and compile branch block
+        if self.curr.lexeme == Lexeme.ELSE:
+            self.consume_if(Lexeme.ELSE)
+
+            # Create branch block
+            branch_block = self.ir.get_new_basicblock(ssa.BasicBlockType.BRANCH)
+            orig_block.branch_block = branch_block
+            cond_branch_op.instr.operands.append(ssa.BasicBlockOp(branch_block.basic_block_id))
+
+            self.ir.set_current_block(branch_block)
+            self.stat_sequence()
+            self.ir.set_current_block(orig_block)
+
+            # Create Join block
+            join_block = self.ir.get_new_basicblock(ssa.BasicBlockType.JOIN)
+            fall_through_block.branch_block = join_block
+            branch_block.fall_through_block = join_block
+            join_block_op = ssa.BasicBlockOp(join_block.basic_block_id)
+            join_branch_op.instr.operands.append(join_block_op)
+
+            rhs_block = branch_block  # Set rhs block for phi function
+        else:
+            # Without then statements
+            join_block = self.ir.get_new_basicblock(ssa.BasicBlockType.JOIN)
+            fall_through_block.branch_block = join_block
+            orig_block.branch_block = join_block
+            join_block_op = ssa.BasicBlockOp(join_block.basic_block_id)
+            join_branch_op.instr.operands.append(join_block_op)
+            cond_branch_op.instr.operands.append(join_block_op)
+
+            rhs_block = orig_block  # Set rhs block for phi function
+
+        # Move and compile join block
+        self.ir.set_current_block(join_block)
+        # Add phi functions for modified variables
+        for ident, var in join_block.sym_table.items():
+            lhs_var = fall_through_block.sym_table[ident]
+            rhs_var = rhs_block.sym_table[ident]
+            if lhs_var != rhs_var:
+                phi_op = self.ir.emit(ssa.Operation.PHI, lhs_var.operand, rhs_var.operand)
+                self.ir.current_block.sym_table[ident].operand = phi_op
+
+        self.consume_if(Lexeme.FI)
+
+    def relation(self) -> ssa.InstructionOp:
+        lhs = self.expression()
+        rel_token = self.consume_if(Lexeme.REL_OP)
+        rhs = self.expression()
+        cmp = self.ir.emit(ssa.Operation.CMP, lhs, rhs)
+        if rel_token.value == "==":
+            # beq
+            return self.ir.emit(ssa.Operation.BEQ, cmp)
+        elif rel_token.value == "!=":
+            # bne
+            return self.ir.emit(ssa.Operation.BNE, cmp)
+        elif rel_token.value == "<":
+            # rhs is equal or less than lhs -> bge
+            # Undefined yet. Revisit after compiling fall-through and add the branch
+            return self.ir.emit(ssa.Operation.BGE, cmp)
+        elif rel_token.value == "<=":
+            # bgt
+            return self.ir.emit(ssa.Operation.BGT, cmp)
+        elif rel_token.value == ">":
+            # blt
+            return self.ir.emit(ssa.Operation.BLT, cmp)
+        elif rel_token.value == ">=":
+            # ble
+            return self.ir.emit(ssa.Operation.BLE, cmp)
+
     # def while_statement(self):
     #     pass
     #
     # def return_statement(self):
     #     pass
 
-    def designator(self) -> Tuple[ssa.Variable, ssa.Operand]:
-        ident = self.consume_if(Lexeme.IDENT)
-        var = self.ir.current_block.sym_table[ident.value]
-        # operand: None (uninitialized int) or InstructionOp (initialized int) or VarAddressOp (array)
-        operand = var.operand
-        idx_pos = 0
-        while self.curr.lexeme == Lexeme.LBRACKET:
-            idx_pos += 1
-            self.consume_if(Lexeme.LBRACKET)
-            idx_op = self.expression()
-            # Calculate offset for this index
-            if idx_op != ssa.ImmediateOp(0):
-                offset_mul_op = self.ir.current_block.emit(
-                    ssa.Operation.MUL, idx_op, reduce(lambda a, b: a*b, var.dims[idx_pos:]))
-                operand = self.ir.current_block.emit(ssa.Operation.ADDA, operand, offset_mul_op)
-            self.consume_if(Lexeme.RBRACKET)
-        return var, operand
 
     def expression(self) -> ssa.Operand:
         lhs = self.term()
@@ -271,9 +349,9 @@ class Parser:
             token = self.consume_if(Lexeme.PLUS, Lexeme.MINUS)
             rhs = self.term()
             if token.lexeme == Lexeme.PLUS:
-                lhs = self.ir.current_block.emit(ssa.Operation.ADD, lhs, rhs)
+                lhs = self.ir.emit(ssa.Operation.ADD, lhs, rhs)
             elif token.lexeme == Lexeme.MINUS:
-                lhs = self.ir.current_block.emit(ssa.Operation.SUB, lhs, rhs)
+                lhs = self.ir.emit(ssa.Operation.SUB, lhs, rhs)
         return lhs
 
     def term(self) -> ssa.Operand:
@@ -282,9 +360,9 @@ class Parser:
             token = self.consume_if(Lexeme.ASTERISK, Lexeme.SLASH)
             rhs = self.factor()
             if token.lexeme == Lexeme.ASTERISK:
-                lhs = self.ir.current_block.emit(ssa.Operation.MUL, lhs, rhs)
+                lhs = self.ir.emit(ssa.Operation.MUL, lhs, rhs)
             elif token.lexeme == Lexeme.SLASH:
-                lhs = self.ir.current_block.emit(ssa.Operation.DIV, lhs, rhs)
+                lhs = self.ir.emit(ssa.Operation.DIV, lhs, rhs)
         return lhs
 
     def factor(self) -> ssa.Operand:
@@ -317,13 +395,14 @@ class Parser:
             self.consume_if(Lexeme.RPAREN)
 
         if ident.value == "InputNum":
-            return self.ir.current_block.emit(ssa.Operation.READ)
+            return self.ir.emit(ssa.Operation.READ)
         elif ident.value == "OutputNum":
-            return self.ir.current_block.emit(ssa.Operation.WRITE, *operands)
+            return self.ir.emit(ssa.Operation.WRITE, *operands)
         elif ident.value == "OutputNewLine":
-            return self.ir.current_block.emit(ssa.Operation.WRITE_NL)
+            return self.ir.emit(ssa.Operation.WRITE_NL)
 
         return ssa.FuncCallOp(self.ir, ident.value, *operands)
+
 
 """
 main
