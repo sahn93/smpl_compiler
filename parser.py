@@ -116,7 +116,6 @@ class Parser:
     def __init__(self, filepath, ir: ssa.SSA):
         self.lexer = Lexer(filepath)
         self.curr = self.lexer.next()
-        self.inst_index = 1
         self.ir = ir
 
     def next(self):

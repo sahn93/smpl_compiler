@@ -1,5 +1,6 @@
-from typing import List, Tuple, Dict, Optional
+from typing import List, Tuple, Dict, DefaultDict, Optional
 from enum import Enum
+from collections import defaultdict
 import warnings
 
 
@@ -65,13 +66,14 @@ class ImmediateOp(Operand):
 class Instruction:
     def __init__(self, i: int, operation: Operation, *operands: Operand):
         self.i: int = i
+        self.instr_op = InstructionOp(self)
         self.operation: Operation = operation
         self.operands: Tuple[Operand] = operands
-        self.dominator: Optional[Instruction] = None    # Previous instruction with the same kind
+        self.dominator: Optional[Instruction] = None  # Previous instruction with the same kind
 
     def __str__(self):
         if self.operation == Operation.CALL:
-            return f"{self.i}: {str(self.operands[0])}" # Operand is always a FuncCallOp.
+            return f"{self.i}: {str(self.operands[0])}"  # Operand is always a FuncCallOp.
         else:
             return f"{self.i}: {self.operation.value} {' '.join([str(op) for op in self.operands])}"
 
@@ -115,7 +117,8 @@ class Variable:
 
 
 class BasicBlock:
-    def __init__(self, func: Function, sym_table: Dict[str, Optional[Instruction]]):
+    def __init__(self, func: Function, sym_table: Dict[str, Optional[Variable]],
+                 instr_dominators: DefaultDict[Operation, List[Instruction]]):
         self.func: Function = func
         self.basic_block_id: int = func.get_basic_block_id()
         self.instrs: List[Instruction] = []
@@ -123,7 +126,8 @@ class BasicBlock:
         self.fall_through: Optional[BasicBlock] = None
         self.is_join_block: bool = False
         self.dominates: List[BasicBlock] = []
-        self.sym_table: Dict[str, Optional[Variable]] = dict(sym_table)  # Copy symbol table from the dominator
+        self.sym_table: Dict[str, Optional[Variable]] = sym_table.copy()
+        self.instr_dominators: DefaultDict[Operation, List[Instruction]] = instr_dominators.copy()
 
     def decl_var(self, ident: str, dims: Optional[List[int]] = None):
         if dims is None:
@@ -198,8 +202,22 @@ class BasicBlock:
 
     def emit(self, operation: Operation, *operands: Operand) -> InstructionOp:
         instr = Instruction(self.func.get_instr_id(), operation, *operands)
+
+        # Common Subexpression Elimination
+        for dom_instr in reversed(self.instr_dominators[operation]):
+            if dom_instr.operation == Operation.STORE:
+                break   # For load operation to forget everything before the store operation
+            if instr == dom_instr:
+                self.func.instr_counter -= 1
+                return dom_instr.instr_op
+
         self.instrs.append(instr)
-        return InstructionOp(instr)
+        if operation == Operation.STORE:
+            # Add store operation to the load's tree
+            self.instr_dominators[Operation.LOAD].append(instr)
+        else:
+            self.instr_dominators[operation].append(instr)
+        return instr.instr_op
 
 
 class SSA:
@@ -220,12 +238,12 @@ class SSA:
         self.current_block = block
 
     def get_new_function_block(self, name: str, num_operands: int = 0) -> BasicBlock:
-        func_root_bb = BasicBlock(Function(name, num_operands), dict())
+        func_root_bb = BasicBlock(Function(name, num_operands), dict(), defaultdict(list))
         self.func_roots[name] = func_root_bb
         return func_root_bb
 
     def get_new_basicblock(self):
-        return BasicBlock(self.current_func, dict(self.current_block.sym_table))
+        return BasicBlock(self.current_func, self.current_block.sym_table, self.current_block.instr_dominators)
 
     def dot(self) -> str:
         dot_lines = ["digraph G {"]
@@ -235,7 +253,7 @@ class SSA:
         else:  # There are more than 0 user define functions -> add functions as subgraphs
             for i, (func_name, func_root_block) in enumerate(self.func_roots.items()):
                 if func_name in self.builtin_funcs:
-                    continue    # Skip graphs for built-in functions
+                    continue  # Skip graphs for built-in functions
                 dot_subgraph = [f"\tsubgraph cluster_{i} {{"]
                 for line in func_root_block.dot(i):
                     dot_subgraph.append(f"\t{line}")  # Add indent for each subgraph
