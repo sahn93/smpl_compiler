@@ -17,7 +17,6 @@ def main():
 
     ir = SSA()
     smpl_parser = Parser(args.smpl, ir)
-
     smpl_parser.parse()
     print(ir.dot())
 

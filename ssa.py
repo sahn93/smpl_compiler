@@ -101,7 +101,7 @@ class Instruction:
     def __eq__(self, other):
         return (isinstance(other, Instruction) and
                 self.operation == other.operation and
-                self.operands == other.operands)
+                all([l == r for (l, r) in zip(self.operands, other.operands)]))
 
 
 class InstructionOp(Operand):
@@ -112,7 +112,7 @@ class InstructionOp(Operand):
         return f"({self.instr.i})"
 
     def __eq__(self, other):
-        return isinstance(other, InstructionOp) and self.instr == other.instr
+        return isinstance(other, InstructionOp) and self.instr.i == other.instr.i
 
 
 class Function:

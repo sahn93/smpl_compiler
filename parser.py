@@ -2,6 +2,7 @@ import re
 from typing import List, Tuple, Dict, Optional
 from enum import Enum
 from functools import reduce
+from copy import copy
 import os
 import ssa
 
@@ -128,7 +129,7 @@ class Parser:
             self.next()
             return consumed_token
         else:
-            self.error(f"Expected {lexemes}, got {self.curr.lexeme}")
+            self.error(f"Expected {[lexeme.name for lexeme in lexemes]}, got {self.curr.lexeme.name}")
 
     def computation(self) -> None:
         main_func = self.ir.get_new_function_block("main")
@@ -159,12 +160,12 @@ class Parser:
             return self.func_call()
         elif self.curr.lexeme == Lexeme.IF:
             return self.if_statement()
-        # elif self.curr.lexeme == Lexeme.WHILE:
-        #     return self.while_statement()
+        elif self.curr.lexeme == Lexeme.WHILE:
+            return self.while_statement()
         # elif self.curr.lexeme == Lexeme.RETURN:
         #     return self.return_statement()
         else:
-            self.error(f"Expected statement, got {self.curr.lexeme}")
+            self.error(f"Expected statement, got {self.curr.lexeme.name}")
 
     def designator(self) -> Tuple[ssa.Variable, ssa.Operand]:
         ident = self.consume_if(Lexeme.IDENT)
@@ -251,9 +252,38 @@ class Parser:
         self.consume_if(Lexeme.RPAREN)
         return params
 
+    def add_phi_functions(self,
+                          join_block: ssa.BasicBlock,
+                          left_parent_block: ssa.BasicBlock,
+                          right_parent_block: ssa.BasicBlock) -> None:
+        self.ir.set_current_block(join_block)
+        join_block_instr_len = len(join_block.instrs)
+        for ident, var in join_block.sym_table.items():
+            lhs_var = left_parent_block.sym_table[ident]
+            rhs_var = right_parent_block.sym_table[ident]
+            if lhs_var != rhs_var:
+                phi_op = join_block.emit(ssa.Operation.PHI, lhs_var.operand, rhs_var.operand)
+                join_block.sym_table[ident].operand = phi_op
+                # Update previous instructions' operands modified by the phi function
+                for instr in join_block.instrs[:join_block_instr_len]:
+                    for i, operand in enumerate(instr.operands):
+                        if operand in [lhs_var.operand, rhs_var.operand]:
+                            instr.operands[i] = phi_op
+                            break
+
+                if join_block.branch_block is not None:  # while statement's body block
+                    # Update left operand to the phi operand
+                    join_block.branch_block.sym_table[ident].operand = phi_op
+                    # Update previous instructions' operands modified by the phi function
+                    for instr in join_block.branch_block.instrs:
+                        for i, operand in enumerate(instr.operands):
+                            if operand in [lhs_var.operand, rhs_var.operand]:
+                                instr.operands[i] = phi_op
+                                break
+
     def if_statement(self) -> None:
         self.consume_if(Lexeme.IF)
-        # Create 3 Basic Blocks
+        # Create fall-through block
         orig_block = self.ir.current_block
         fall_through_block = self.ir.get_new_basicblock(ssa.BasicBlockType.FALL_THROUGH)
 
@@ -300,45 +330,56 @@ class Parser:
             rhs_block = orig_block  # Set rhs block for phi function
 
         # Move to join block and add phi functions
-        self.ir.set_current_block(join_block)
-        # Add phi functions for modified variables
-        for ident, var in join_block.sym_table.items():
-            lhs_var = fall_through_block.sym_table[ident]
-            rhs_var = rhs_block.sym_table[ident]
-            if lhs_var != rhs_var:
-                phi_op = self.ir.emit(ssa.Operation.PHI, lhs_var.operand, rhs_var.operand)
-                self.ir.current_block.sym_table[ident].operand = phi_op
+        self.add_phi_functions(join_block, fall_through_block, rhs_block)
 
         self.consume_if(Lexeme.FI)
+
+    def while_statement(self):
+        self.consume_if(Lexeme.WHILE)
+        orig_block = self.ir.current_block
+
+        # Create a join block
+        join_block = self.ir.get_new_basicblock(ssa.BasicBlockType.FALL_THROUGH)
+        self.ir.set_current_block(join_block)
+
+        # Add cmp to the join block
+        cond_branch_op = self.relation()  # Second operand is not added yet
+
+        # Create a branch block(while body) which is dominated by the join block
+        self.consume_if(Lexeme.DO)
+        branch_block = self.ir.get_new_basicblock(ssa.BasicBlockType.BRANCH)
+        cond_branch_op.instr.operands.append(ssa.BasicBlockOp(branch_block.basic_block_id))
+        self.ir.set_current_block(branch_block)
+        self.stat_sequence()
+
+        # Back to the join block and create the phi functions between the orig and join blocks
+        self.add_phi_functions(join_block, orig_block, branch_block)
+        join_block.instrs = join_block.instrs[2:] + join_block.instrs[:2]  # Move cmp, branch to the last
+
+        # Create a fall-through block followed by the while statement
+        fall_through_block = self.ir.get_new_basicblock(ssa.BasicBlockType.FALL_THROUGH)
+        self.ir.set_current_block(fall_through_block)
+
+        self.consume_if(Lexeme.OD)
 
     def relation(self) -> ssa.InstructionOp:
         lhs = self.expression()
         rel_token = self.consume_if(Lexeme.REL_OP)
         rhs = self.expression()
         cmp = self.ir.emit(ssa.Operation.CMP, lhs, rhs)
-        if rel_token.value == "==":
-            # beq
+        if rel_token.value == "==":  # beq
             return self.ir.emit(ssa.Operation.BEQ, cmp)
-        elif rel_token.value == "!=":
-            # bne
+        elif rel_token.value == "!=": # bne
             return self.ir.emit(ssa.Operation.BNE, cmp)
-        elif rel_token.value == "<":
-            # rhs is equal or less than lhs -> bge
-            # Undefined yet. Revisit after compiling fall-through and add the branch
+        elif rel_token.value == "<":  # rhs is equal or less than lhs -> bge
             return self.ir.emit(ssa.Operation.BGE, cmp)
-        elif rel_token.value == "<=":
-            # bgt
+        elif rel_token.value == "<=": # bgt
             return self.ir.emit(ssa.Operation.BGT, cmp)
-        elif rel_token.value == ">":
-            # blt
+        elif rel_token.value == ">":  # blt
             return self.ir.emit(ssa.Operation.BLT, cmp)
-        elif rel_token.value == ">=":
-            # ble
+        elif rel_token.value == ">=": # ble
             return self.ir.emit(ssa.Operation.BLE, cmp)
 
-    # def while_statement(self):
-    #     pass
-    #
     # def return_statement(self):
     #     pass
 
