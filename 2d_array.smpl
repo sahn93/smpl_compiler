@@ -1,0 +1,15 @@
+main
+var row, col;
+array[3][3] arr;
+{
+    let row <- 0;
+    let col <- 0;
+    while row < 3 do
+        while col < 3 do
+            let arr[row][col] <- 7;
+            call OutputNum(arr[row][col]);
+            let col <- col + 1
+        od;
+        let row <- row + 1
+    od
+}.

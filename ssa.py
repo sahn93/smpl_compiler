@@ -52,6 +52,9 @@ class Operand:
     def __eq__(self, other):
         pass
 
+    def __hash__(self):
+        return hash(str(self))
+
 
 class BasicBlockOp(Operand):
     def __init__(self, block_id: int):
@@ -62,6 +65,9 @@ class BasicBlockOp(Operand):
 
     def __eq__(self, other):
         return isinstance(other, BasicBlockOp) and self.block_id == other.block_id
+
+    def __hash__(self):
+        return hash(str(self))
 
 
 class VarAddressOp(Operand):
@@ -74,6 +80,9 @@ class VarAddressOp(Operand):
     def __eq__(self, other):
         return isinstance(other, VarAddressOp) and self.name == other.name
 
+    def __hash__(self):
+        return hash(str(self))
+
 
 class ImmediateOp(Operand):
     def __init__(self, value: int):
@@ -84,6 +93,9 @@ class ImmediateOp(Operand):
 
     def __eq__(self, other):
         return isinstance(other, ImmediateOp) and self.value == other.value
+
+    def __hash__(self):
+        return hash(str(self))
 
 
 class Instruction:
@@ -105,6 +117,7 @@ class Instruction:
     def __eq__(self, other):
         return (isinstance(other, Instruction) and
                 self.operation == other.operation and
+                len(self.operands) == len(other.operands) and
                 all([l == r for (l, r) in zip(self.operands, other.operands)]))
 
 
@@ -118,6 +131,8 @@ class InstructionOp(Operand):
     def __eq__(self, other):
         return isinstance(other, InstructionOp) and self.instr.i == other.instr.i
 
+    def __hash__(self):
+        return hash(str(self))
 
 class Function:
     def __init__(self, name: str, arg_names: List[str] = None, is_void: bool = True):
@@ -137,12 +152,28 @@ class Function:
 
 
 class Variable:
-    def __init__(self, operand: Optional[Operand], dims: Optional[List[int]]):
-        self.operand = operand
+    def __init__(self, name: str, dims: Optional[List[int]], operand: Optional[Operand]):
+        self.name = name
         self.dims = dims
+        self.operand = operand
 
     def __eq__(self, other):
-        return isinstance(other, Variable) and self.operand == other.operand
+        return isinstance(other, Variable) and self.name == other.name and self.operand == other.operand
+
+
+class VariableOp(Operand):
+    def __init__(self, name: str, operand: Operand):
+        self.name = name
+        self.operand = operand
+
+    def __eq__(self, other):
+        return isinstance(other, VariableOp) and self.name == other.name and self.operand == other.operand
+
+    def __str__(self):
+        return f"{self.name}:{str(self.operand)}"
+
+    def __hash__(self):
+        return hash(str(self))
 
 
 class BasicBlock:
@@ -150,8 +181,10 @@ class BasicBlock:
                  func: Function,
                  sym_table: Dict[str, Optional[Variable]],
                  instr_dominators: DefaultDict[Operation, List[Instruction]],
-                 basicblock_type: BasicBlockType):
+                 basicblock_type: BasicBlockType,
+                 num_nested_whiles: int = 0):
         self.type = basicblock_type
+        self.num_nested_whiles = num_nested_whiles
         self.func: Function = func
         self.basic_block_id: int = func.get_basic_block_id()
         self.instrs: List[Instruction] = []
@@ -165,14 +198,14 @@ class BasicBlock:
 
     def decl_var(self, ident: str, dims: Optional[List[int]] = None):
         if dims is None:
-            self.sym_table[ident] = Variable(None, dims)
+            self.sym_table[ident] = Variable(ident, dims, None)
         else:
-            self.sym_table[ident] = Variable(VarAddressOp(ident), dims)
+            self.sym_table[ident] = Variable(ident, dims, VarAddressOp(ident))
 
     def set_var_op(self, ident: str, operand: Operand) -> None:
         self.sym_table[ident].operand = operand
 
-    def get_var_op(self, ident: str) -> Operand:
+    def get_var(self, ident: str) -> Variable:
         if ident not in self.sym_table:
             raise Exception(f"{ident} is not declared in {self.func.name}.")
 
@@ -181,7 +214,7 @@ class BasicBlock:
                           f" Assign an initial value of zero.", UninitializedVariableWarning)
             self.sym_table[ident].operand = ImmediateOp(0)
 
-        return self.sym_table[ident].operand
+        return self.sym_table[ident]
 
     def dot(self, subgraph_id: Optional[int] = None) -> List[str]:
         subgraph_prefix = ""
@@ -236,17 +269,16 @@ class BasicBlock:
 
         return dot_block, dot_branches, dot_doms
 
-    def emit(self, operation: Optional[Operation], *operands: Operand) -> InstructionOp:
+    def emit(self, operation: Operation, *operands: Operand) -> InstructionOp:
         instr = Instruction(self.func.get_instr_id(), operation, *operands)
 
         # Common Subexpression Elimination
-        if operation is not None:
-            for dom_instr in reversed(self.instr_dominators[operation]):
-                if dom_instr.operation == Operation.STORE:
-                    break  # For load operation to forget everything before the store operation
-                if instr == dom_instr:
-                    self.func.instr_counter -= 1
-                    return dom_instr.instr_op
+        for dom_instr in reversed(self.instr_dominators[operation]):
+            if dom_instr.operation == Operation.STORE:
+                break  # For load operation, forget everything before the store operation
+            if instr == dom_instr:
+                self.func.instr_counter -= 1
+                return dom_instr.instr_op
 
         # There is no common subexpression.
         self.instrs.append(instr)
@@ -272,7 +304,7 @@ class SSA:
         output_newline_block = self.get_new_function_block("OutputNewLine", [])
         output_newline_block.emit(Operation.WRITE_NL)
 
-    def emit(self, operation: Optional[Operation], *operands: Operand) -> InstructionOp:
+    def emit(self, operation: Operation, *operands: Operand) -> InstructionOp:
         return self.current_block.emit(operation, *operands)
 
     def set_current_block(self, block: BasicBlock):
@@ -290,7 +322,7 @@ class SSA:
         :return: Root basic block for the new function.
         """
         func = Function(name, arg_names, is_void)
-        func_root_bb = BasicBlock(func, dict(), defaultdict(list), BasicBlockType.FUNC_ROOT)
+        func_root_bb = BasicBlock(func, dict(), defaultdict(list), BasicBlockType.FUNC_ROOT, 0)
         self.func_roots[name] = func_root_bb
         self.current_func = func
         self.current_block = func_root_bb
@@ -303,7 +335,8 @@ class SSA:
     def get_new_basic_block(self,
                             basic_block_type: BasicBlockType):
         new_bb = BasicBlock(self.current_func, self.current_block.sym_table,
-                            self.current_block.instr_dominators, basic_block_type)
+                            self.current_block.instr_dominators, basic_block_type,
+                            self.current_block.num_nested_whiles)
         if basic_block_type == BasicBlockType.FALL_THROUGH:
             self.current_block.fall_through_block = new_bb
         elif basic_block_type == BasicBlockType.BRANCH:
@@ -328,7 +361,7 @@ class SSA:
                 dot_subgraph.append("\t}")
                 dot_lines += dot_subgraph
 
-        dot_lines.append('}\n')
+        dot_lines.append('}')
 
         return '\n'.join(dot_lines)
 

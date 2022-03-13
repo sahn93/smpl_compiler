@@ -31,7 +31,7 @@ class Lexeme(Enum):
     OD = 'od'
     RETURN = re.compile(r'return\s+')
     VAR = re.compile(r'var\s+')
-    ARRAY = re.compile(r'array\s+')
+    ARRAY = 'array'
     LPAREN = '('
     RPAREN = ')'
     LBRACE = '{'
@@ -155,6 +155,7 @@ class Parser:
         self.stat_sequence()
         self.consume_if(Lexeme.RBRACE)
         self.consume_if(Lexeme.PERIOD)
+        self.ir.emit(ssa.Operation.END)
 
     def stat_sequence(self):
         self.statement()
@@ -180,22 +181,25 @@ class Parser:
             self.error(f"Expected statement, got {self.curr.lexeme.name}")
 
     def designator(self) -> Tuple[ssa.Variable, ssa.Operand]:
-        ident = self.consume_if(Lexeme.IDENT)
-        var = self.ir.current_block.sym_table[ident.value]
+        ident = self.consume_if(Lexeme.IDENT).value
+        var = self.ir.current_block.sym_table[ident]
         # operand: None (uninitialized int) or InstructionOp (initialized int) or VarAddressOp (array)
-        operand = var.operand
+        var_addr = var.operand
         idx_pos = 0
-        while self.curr.lexeme == Lexeme.LBRACKET:
-            idx_pos += 1
+        while self.curr.lexeme == Lexeme.LBRACKET:  # is Array.
             self.consume_if(Lexeme.LBRACKET)
             idx_op = self.expression()
+
             # Calculate offset for this index
-            if idx_op != ssa.ImmediateOp(0):
-                offset_mul_op = self.ir.emit(
-                    ssa.Operation.MUL, idx_op, reduce(lambda a, b: a*b, var.dims[idx_pos:]))
-                operand = self.ir.emit(ssa.Operation.ADDA, operand, offset_mul_op)
+            if len(var.dims) > idx_pos + 1:
+                stride = 4 * reduce(lambda a, b: a*b, var.dims[idx_pos+1:])
+            else:
+                stride = 4  # bytes
+            offset_op = self.ir.emit(ssa.Operation.MUL, idx_op, ssa.ImmediateOp(stride))
+            var_addr = self.ir.emit(ssa.Operation.ADDA, var_addr, offset_op)
             self.consume_if(Lexeme.RBRACKET)
-        return var, operand
+            idx_pos += 1
+        return var, var_addr
 
     def assignment(self) -> None:
         self.consume_if(Lexeme.LET)
@@ -204,6 +208,9 @@ class Parser:
         rhs = self.expression()
         if lhs_var.dims is None:    # Integer, update the value of the symbol table
             lhs_var.operand = rhs
+            if not self.ir.current_block.num_nested_whiles:
+                lhs_var.operand = ssa.VariableOp(lhs_var.name, lhs_var.operand)
+
         else:   # Array, lhs is an address, store rhs in the address.
             self.ir.current_block.emit(ssa.Operation.STORE, rhs, lhs)
 
@@ -275,31 +282,76 @@ class Parser:
     def add_phi_functions(self,
                           join_block: ssa.BasicBlock,
                           left_parent_block: ssa.BasicBlock,
-                          right_parent_block: ssa.BasicBlock) -> None:
+                          right_parent_block: ssa.BasicBlock,
+                          is_while: bool = False) -> None:
         self.ir.set_current_block(join_block)
         join_block_instr_len = len(join_block.instrs)
+        num_phi_instr = 0
+
         for ident, var in join_block.sym_table.items():
-            lhs_var = left_parent_block.sym_table[ident]
-            rhs_var = right_parent_block.sym_table[ident]
-            if lhs_var != rhs_var:
+            lhs_var = left_parent_block.get_var(ident)
+            rhs_var = right_parent_block.get_var(ident)
+            if lhs_var.operand != rhs_var.operand:
+                num_phi_instr += 1
                 phi_op = join_block.emit(ssa.Operation.PHI, lhs_var.operand, rhs_var.operand)
-                join_block.sym_table[ident].operand = phi_op
+                # print(f"{phi_op.instr}")
+                join_block.set_var_op(ident, phi_op)
                 # Update previous instructions' operands modified by the phi function
                 for instr in join_block.instrs[:join_block_instr_len]:
                     for i, operand in enumerate(instr.operands):
                         if operand in [lhs_var.operand, rhs_var.operand]:
+                            # print(f"{instr}")
                             instr.operands[i] = phi_op
-                            break
+                            # print(f"->{instr}")
 
-                if join_block.branch_block is not None:  # while statement's body block
-                    # Update left operand to the phi operand
-                    join_block.branch_block.sym_table[ident].operand = phi_op
-                    # Update previous instructions' operands modified by the phi function
-                    for instr in join_block.branch_block.instrs:
+                # While loop -> update values modified by phi in the dominated blocks
+                def dfs(block: ssa.BasicBlock, ops_to_phi: Dict[ssa.Operand, ssa.Operand], phi_op):
+                    print("\nBB", block.basic_block_id, phi_op, lhs_var.operand, rhs_var.operand)
+                    ops_to_phi = dict(ops_to_phi)
+                    for instr in block.instrs:
                         for i, operand in enumerate(instr.operands):
-                            if operand in [lhs_var.operand, rhs_var.operand]:
-                                instr.operands[i] = phi_op
-                                break
+                            if operand in ops_to_phi.keys():
+                                print([str(op) for op in ops_to_phi.keys()])
+                                print([str(op) for op in ops_to_phi.values()])
+                                print(f"{instr}")
+                                instr.operands[i] = ops_to_phi[operand]
+                                print(f"->{instr}")
+
+                        if instr.operation == ssa.Operation.PHI:
+                            ops_to_phi[instr.instr_op] = instr.instr_op
+                            for operand in instr.operands:
+                                ops_to_phi[operand] = instr.instr_op
+                                if isinstance(operand, ssa.VariableOp):
+                                    if ident == operand.name:
+                                        phi_op = instr.instr_op
+
+                    if ident in block.sym_table:
+                        block.set_var_op(ident, phi_op)
+
+                    for dom_block in block.dominates:
+                        dfs(dom_block, ops_to_phi, phi_op)
+
+                if is_while:
+                    ops_to_phi = {}
+                    ops_to_phi[lhs_var.operand] = phi_op
+                    ops_to_phi[rhs_var.operand] = phi_op
+                    for dom_block in join_block.dominates:
+                        dfs(dom_block, ops_to_phi, phi_op)
+
+        if is_while:
+            join_block.num_nested_whiles -= 1
+            # If the join block is the outermost, unwrap VariableOps.
+            if join_block.num_nested_whiles == 0:
+                blocks_to_update = [join_block]
+                while blocks_to_update:
+                    block = blocks_to_update.pop()
+                    blocks_to_update += reversed(block.dominates)
+                    for instr in block.instrs:
+                        for i, operand in enumerate(instr.operands):
+                            if isinstance(operand, ssa.VariableOp):
+                                instr.operands[i] = operand.operand
+
+            join_block.instrs = join_block.instrs[-num_phi_instr:] + join_block.instrs[:-num_phi_instr]
 
     def if_statement(self) -> None:
         self.consume_if(Lexeme.IF)
@@ -358,8 +410,10 @@ class Parser:
         orig_block = self.ir.current_block
 
         # Create a join block
-        join_block = self.ir.get_new_basic_block(ssa.BasicBlockType.FALL_THROUGH)
+        join_block = self.ir.get_new_basic_block(ssa.BasicBlockType.JOIN)
+        orig_block.fall_through_block = join_block
         self.ir.set_current_block(join_block)
+        join_block.num_nested_whiles += 1
 
         # Add cmp to the join block
         cond_branch_op = self.relation()  # Second operand is not added yet
@@ -374,8 +428,7 @@ class Parser:
         branch_last_block.fall_through_block = join_block
 
         # Back to the join block and create the phi functions between the orig and join blocks
-        self.add_phi_functions(join_block, orig_block, branch_last_block)
-        join_block.instrs = join_block.instrs[2:] + join_block.instrs[:2]  # Move cmp, branch to the last
+        self.add_phi_functions(join_block, orig_block, branch_last_block, is_while=True)
 
         # Create a fall-through block followed by the while statement
         fall_through_block = self.ir.get_new_basic_block(ssa.BasicBlockType.FALL_THROUGH)
