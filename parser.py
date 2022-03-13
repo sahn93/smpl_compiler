@@ -132,14 +132,25 @@ class Parser:
             self.error(f"Expected {[lexeme.name for lexeme in lexemes]}, got {self.curr.lexeme.name}")
 
     def computation(self) -> None:
-        main_func = self.ir.get_new_function_block("main")
+        """
+        Parse and compile a smpl code at the same time.
+        :return: None
+        """
+        # Init main function.
+        main_func = self.ir.get_new_function_block("main", [])
         self.ir.set_current_block(main_func)
-
         self.consume_if(Lexeme.MAIN)
+
+        # Add variables and compile functions.
         while self.curr.lexeme in [Lexeme.VAR, Lexeme.ARRAY]:
             self.var_decl()
         while self.curr.lexeme in [Lexeme.VOID, Lexeme.FUNC]:
             self.func_decl()
+
+        # Restore context to the main function after compiling the user declared functions.
+        self.ir.set_current_block(main_func)
+
+        # Compile function body
         self.consume_if(Lexeme.LBRACE)
         self.stat_sequence()
         self.consume_if(Lexeme.RBRACE)
@@ -149,21 +160,22 @@ class Parser:
         self.statement()
         while self.curr.lexeme == Lexeme.SEMICOLON:
             self.consume_if(Lexeme.SEMICOLON)
-            self.statement()
-        if self.curr.lexeme == Lexeme.SEMICOLON:
+            if self.curr.lexeme in [Lexeme.LET, Lexeme.CALL, Lexeme.IF, Lexeme.WHILE, Lexeme.RETURN]:
+                self.statement()
+        if self.curr.lexeme == Lexeme.SEMICOLON:  # Last semicolon is optional.
             self.consume_if(Lexeme.SEMICOLON)
 
-    def statement(self):
+    def statement(self) -> Optional[ssa.Operand]:
         if self.curr.lexeme == Lexeme.LET:
             return self.assignment()
         elif self.curr.lexeme == Lexeme.CALL:
-            return self.func_call()
+            return self.func_call()  # returns an operand
         elif self.curr.lexeme == Lexeme.IF:
             return self.if_statement()
         elif self.curr.lexeme == Lexeme.WHILE:
             return self.while_statement()
-        # elif self.curr.lexeme == Lexeme.RETURN:
-        #     return self.return_statement()
+        elif self.curr.lexeme == Lexeme.RETURN:
+            return self.return_statement()  # returns an operand
         else:
             self.error(f"Expected statement, got {self.curr.lexeme.name}")
 
@@ -233,22 +245,30 @@ class Parser:
             is_void = True
             self.consume_if(Lexeme.VOID)
         self.consume_if(Lexeme.FUNC)
-        ident = self.ident()
-        params = self.formal_param()
+        func_name = self.ident()
+        param_names = self.formal_param()
+
+        # Move to the new function and block, compile function body
+        self.ir.get_new_function_block(func_name, param_names, is_void)
         self.consume_if(Lexeme.SEMICOLON)
-        local_variables, stmts = self.func_body()
+        self.func_body()
         self.consume_if(Lexeme.SEMICOLON)
 
     def func_body(self):
-        # TODO
-        return None, None
+        while self.curr.lexeme in [Lexeme.VAR, Lexeme.ARRAY]:
+            self.var_decl()
+        self.consume_if(Lexeme.LBRACE)
+        self.stat_sequence()
+        self.consume_if(Lexeme.RBRACE)
 
-    def formal_param(self):
+    def formal_param(self) -> List[str]:
         self.consume_if(Lexeme.LPAREN)
-        params = [self.ident()]
-        while self.curr.lexeme == Lexeme.COMMA:
-            self.consume_if(Lexeme.COMMA)
+        params = []
+        if self.curr.lexeme == Lexeme.IDENT:
             params.append(self.ident())
+            while self.curr.lexeme == Lexeme.COMMA:
+                self.consume_if(Lexeme.COMMA)
+                params.append(self.ident())
         self.consume_if(Lexeme.RPAREN)
         return params
 
@@ -285,7 +305,7 @@ class Parser:
         self.consume_if(Lexeme.IF)
         # Create fall-through block
         orig_block = self.ir.current_block
-        fall_through_root_block = self.ir.get_new_basicblock(ssa.BasicBlockType.FALL_THROUGH)
+        fall_through_root_block = self.ir.get_new_basic_block(ssa.BasicBlockType.FALL_THROUGH)
 
         # emit incomplete branch instruction to the original block
         cond_branch_op = self.relation()  # Second operand is not added yet
@@ -303,16 +323,15 @@ class Parser:
             self.consume_if(Lexeme.ELSE)
 
             # Create branch block
-            branch_root_block = self.ir.get_new_basicblock(ssa.BasicBlockType.BRANCH)
+            branch_root_block = self.ir.get_new_basic_block(ssa.BasicBlockType.BRANCH)
             cond_branch_op.instr.operands.append(ssa.BasicBlockOp(branch_root_block.basic_block_id))
-
             self.ir.set_current_block(branch_root_block)
             self.stat_sequence()
             branch_last_block = self.ir.current_block
-            self.ir.set_current_block(orig_block)
 
             # Create Join block
-            join_block = self.ir.get_new_basicblock(ssa.BasicBlockType.JOIN)
+            self.ir.set_current_block(orig_block)
+            join_block = self.ir.get_new_basic_block(ssa.BasicBlockType.JOIN)
             fall_through_last_block.branch_block = join_block
             branch_last_block.fall_through_block = join_block
             join_branch_op.instr.operands.append(ssa.BasicBlockOp(join_block.basic_block_id))
@@ -320,7 +339,7 @@ class Parser:
             rhs_block = branch_last_block  # Set rhs block for phi function
         else:
             # Without then statements
-            join_block = self.ir.get_new_basicblock(ssa.BasicBlockType.JOIN)
+            join_block = self.ir.get_new_basic_block(ssa.BasicBlockType.JOIN)
             fall_through_last_block.branch_block = join_block
             orig_block.branch_block = join_block
             join_block_op = ssa.BasicBlockOp(join_block.basic_block_id)
@@ -339,26 +358,27 @@ class Parser:
         orig_block = self.ir.current_block
 
         # Create a join block
-        join_block = self.ir.get_new_basicblock(ssa.BasicBlockType.FALL_THROUGH)
+        join_block = self.ir.get_new_basic_block(ssa.BasicBlockType.FALL_THROUGH)
         self.ir.set_current_block(join_block)
 
         # Add cmp to the join block
         cond_branch_op = self.relation()  # Second operand is not added yet
+        self.consume_if(Lexeme.DO)
 
         # Create a branch block(while body) which is dominated by the join block
-        self.consume_if(Lexeme.DO)
-        branch_root_block = self.ir.get_new_basicblock(ssa.BasicBlockType.BRANCH)
+        branch_root_block = self.ir.get_new_basic_block(ssa.BasicBlockType.BRANCH)
         cond_branch_op.instr.operands.append(ssa.BasicBlockOp(branch_root_block.basic_block_id))
         self.ir.set_current_block(branch_root_block)
         self.stat_sequence()
         branch_last_block = self.ir.current_block
+        branch_last_block.fall_through_block = join_block
 
         # Back to the join block and create the phi functions between the orig and join blocks
         self.add_phi_functions(join_block, orig_block, branch_last_block)
         join_block.instrs = join_block.instrs[2:] + join_block.instrs[:2]  # Move cmp, branch to the last
 
         # Create a fall-through block followed by the while statement
-        fall_through_block = self.ir.get_new_basicblock(ssa.BasicBlockType.FALL_THROUGH)
+        fall_through_block = self.ir.get_new_basic_block(ssa.BasicBlockType.FALL_THROUGH)
         self.ir.set_current_block(fall_through_block)
 
         self.consume_if(Lexeme.OD)
@@ -381,8 +401,10 @@ class Parser:
         elif rel_token.value == ">=": # ble
             return self.ir.emit(ssa.Operation.BLE, cmp)
 
-    # def return_statement(self):
-    #     pass
+    def return_statement(self) -> ssa.Operand:
+        self.consume_if(Lexeme.RETURN)
+        if self.curr.lexeme in [Lexeme.IDENT, Lexeme.NUMBER, Lexeme.LPAREN, Lexeme.CALL]:
+            return self.expression()
 
     def expression(self) -> ssa.Operand:
         lhs = self.term()
@@ -422,38 +444,36 @@ class Parser:
         return operand
 
     def func_call(self) -> ssa.Operand:
+        """
+        Call a function with arguments
+        :return: FuncCallOp if return int, InstructionOp if void.
+        """
         self.consume_if(Lexeme.CALL)
-        ident = self.consume_if(Lexeme.IDENT)
-        operands = []
+        ident = self.consume_if(Lexeme.IDENT).value
+        args = []
 
         if self.curr.lexeme == Lexeme.LPAREN:
             self.consume_if(Lexeme.LPAREN)
             if self.curr.lexeme != Lexeme.RPAREN:   # Parse func params
-                operands.append(self.expression())
+                args.append(self.expression())
                 while self.curr.lexeme == Lexeme.COMMA:
                     self.consume_if(Lexeme.COMMA)
-                    operands.append(self.expression())
+                    args.append(self.expression())
             self.consume_if(Lexeme.RPAREN)
 
-        if ident.value == "InputNum":
+        # Emit a corresponding operation for predefined functions
+        if ident == "InputNum":
             return self.ir.emit(ssa.Operation.READ)
-        elif ident.value == "OutputNum":
-            return self.ir.emit(ssa.Operation.WRITE, *operands)
-        elif ident.value == "OutputNewLine":
+        elif ident == "OutputNum":
+            return self.ir.emit(ssa.Operation.WRITE, *args)
+        elif ident == "OutputNewLine":
             return self.ir.emit(ssa.Operation.WRITE_NL)
 
-        return ssa.FuncCallOp(self.ir, ident.value, *operands)
+        func_call_op = ssa.FuncCallOp(self.ir, ident, *args)
 
-
-"""
-main
-var a, b, c, d, e; {
-    let a <- call InputNum();
-    let b <- a;
-    let c <- b;
-    let d <- b + c;
-    let e <- a + b;
-    if a < 0 then let d <- d + e; let a <- d else let d <- e fi;
-    call OutputNum(a)
-}.
-"""
+        if self.ir.func_roots[ident].func.is_void:
+            # If the function returns nothing, emit a call instruction.
+            return self.ir.emit(ssa.Operation.CALL, func_call_op)
+        else:
+            # If the function has a return value, return as an operand
+            return func_call_op

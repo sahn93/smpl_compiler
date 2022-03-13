@@ -46,7 +46,11 @@ class Operation(Enum):
 
 
 class Operand:
-    pass
+    def __str__(self):
+        pass
+
+    def __eq__(self, other):
+        pass
 
 
 class BasicBlockOp(Operand):
@@ -116,11 +120,12 @@ class InstructionOp(Operand):
 
 
 class Function:
-    def __init__(self, name: str, num_operands: int):
+    def __init__(self, name: str, arg_names: List[str] = None, is_void: bool = True):
         self.name = name
-        self.num_operands = num_operands
+        self.arg_names = arg_names
         self.instr_counter = 0
         self.block_counter = 0  # A function's root block
+        self.is_void = is_void
 
     def get_basic_block_id(self):
         self.block_counter += 1
@@ -227,7 +232,7 @@ class BasicBlock:
         dot_doms = []
         for dom in self.dominates:
             dot_doms.append(f'{subgraph_prefix}bb{self.basic_block_id}:b'
-                            f' -> bb{dom.basic_block_id}:b [color=blue, style=dotted, label="dom"];')
+                            f' -> {subgraph_prefix}bb{dom.basic_block_id}:b [color=blue, style=dotted, label="dom"];')
 
         return dot_block, dot_branches, dot_doms
 
@@ -260,42 +265,48 @@ class SSA:
         self.func_roots: Dict[str, BasicBlock] = dict()
         self.builtin_funcs: List[str] = ["InputNum", "OutputNum", "OutputNewLine"]
         # Add built-in functions
-        self.get_new_function_block("InputNum")
-        self.emit(Operation.READ)
-        self.get_new_function_block("OutputNum", 1)
-        self.emit(Operation.WRITE, VarAddressOp("x"))
-        self.get_new_function_block("OutputNewLine")
-        self.emit(Operation.WRITE_NL)
+        input_num_block = self.get_new_function_block("InputNum", [])
+        input_num_block.emit(Operation.READ)
+        output_num_block = self.get_new_function_block("OutputNum", ['x'])
+        output_num_block.emit(Operation.WRITE, output_num_block.sym_table['x'].operand)
+        output_newline_block = self.get_new_function_block("OutputNewLine", [])
+        output_newline_block.emit(Operation.WRITE_NL)
 
     def emit(self, operation: Optional[Operation], *operands: Operand) -> InstructionOp:
         return self.current_block.emit(operation, *operands)
 
     def set_current_block(self, block: BasicBlock):
         self.current_block = block
+        self.current_func = block.func
 
-    def get_new_function_block(self, name: str, num_operands: int = 0) -> BasicBlock:
+    def get_new_function_block(self, name: str, arg_names: List[str], is_void: bool = True) -> BasicBlock:
         """
         Create a new function and a root basic block.
         A function has a separated control flow graph and the new block becomes the root node.
         It automatically set the current function as the new function.
-        :param name:
-        :param num_operands:
+        :param name: Function's name.
+        :param arg_names: Function arguments' names.
+        :param is_void: True if the function returns nothing, False if the function returns an int.
         :return: Root basic block for the new function.
         """
-        func = Function(name, num_operands)
+        func = Function(name, arg_names, is_void)
         func_root_bb = BasicBlock(func, dict(), defaultdict(list), BasicBlockType.FUNC_ROOT)
         self.func_roots[name] = func_root_bb
         self.current_func = func
         self.current_block = func_root_bb
+        if arg_names:
+            for operand_name in arg_names:
+                func_root_bb.decl_var(operand_name)
+                func_root_bb.sym_table[operand_name].operand = VarAddressOp(operand_name)
         return func_root_bb
 
-    def get_new_basicblock(self,
-                           basicblock_type: BasicBlockType):
+    def get_new_basic_block(self,
+                            basic_block_type: BasicBlockType):
         new_bb = BasicBlock(self.current_func, self.current_block.sym_table,
-                            self.current_block.instr_dominators, basicblock_type)
-        if basicblock_type == BasicBlockType.FALL_THROUGH:
+                            self.current_block.instr_dominators, basic_block_type)
+        if basic_block_type == BasicBlockType.FALL_THROUGH:
             self.current_block.fall_through_block = new_bb
-        elif basicblock_type == BasicBlockType.BRANCH:
+        elif basic_block_type == BasicBlockType.BRANCH:
             self.current_block.branch_block = new_bb
         self.current_block.dominates.append(new_bb)
         return new_bb
@@ -310,9 +321,10 @@ class SSA:
                 if func_name in self.builtin_funcs:
                     continue  # Skip graphs for built-in functions
                 dot_subgraph = [f"\tsubgraph cluster_{i} {{"]
+                func_args = func_root_block.func.arg_names
+                dot_subgraph.append(f'\t\tlabel="{func_name}({", ".join(func_args)})"')
                 for line in func_root_block.dot(i):
                     dot_subgraph.append(f"\t{line}")  # Add indent for each subgraph
-                dot_subgraph.append(f'\t\tlabel="{func_name}"')
                 dot_subgraph.append("\t}")
                 dot_lines += dot_subgraph
 
@@ -325,10 +337,10 @@ class FuncCallOp(Operand):
     def __init__(self, ir: SSA, ident: str, *operands: Operand):
         if ident not in ir.func_roots:
             raise SSACompileError(f"function {ident} is not declared.")
-        if ir.func_roots[ident].func.num_operands != len(operands):
-            raise SSACompileError(f"function {ident} expects {ir.func_roots[ident].func.num_operands}"
-                                  f" operands, but got {len(operands)}.")
-
+        func_operands = ir.func_roots[ident].func.arg_names
+        if len(func_operands) != len(operands):
+            raise SSACompileError(f"function {ident}({', '.join(func_operands)})"
+                                  f" expects {len(func_operands)} operands, but got {len(operands)}.")
         self.ident = ident
         self.operands: Tuple[Operand] = operands
 
