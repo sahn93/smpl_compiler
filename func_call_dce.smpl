@@ -14,7 +14,9 @@ var pow;
         let pow <- pow * a;
         let b <- b - 1;
     od;
-    return pow
+    return pow;
+    let pow <- pow + 1;
+    call OutputNum(pow)
 };
 
 void function printZero();

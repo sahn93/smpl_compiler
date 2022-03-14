@@ -52,9 +52,6 @@ class Operand:
     def __eq__(self, other):
         pass
 
-    def __hash__(self):
-        return hash(str(self))
-
 
 class BasicBlockOp(Operand):
     def __init__(self, block_id: int):
@@ -65,9 +62,6 @@ class BasicBlockOp(Operand):
 
     def __eq__(self, other):
         return isinstance(other, BasicBlockOp) and self.block_id == other.block_id
-
-    def __hash__(self):
-        return hash(str(self))
 
 
 class VarAddressOp(Operand):
@@ -80,9 +74,6 @@ class VarAddressOp(Operand):
     def __eq__(self, other):
         return isinstance(other, VarAddressOp) and self.name == other.name
 
-    def __hash__(self):
-        return hash(str(self))
-
 
 class ImmediateOp(Operand):
     def __init__(self, value: int):
@@ -93,9 +84,6 @@ class ImmediateOp(Operand):
 
     def __eq__(self, other):
         return isinstance(other, ImmediateOp) and self.value == other.value
-
-    def __hash__(self):
-        return hash(str(self))
 
 
 class Instruction:
@@ -131,8 +119,6 @@ class InstructionOp(Operand):
     def __eq__(self, other):
         return isinstance(other, InstructionOp) and self.instr.i == other.instr.i
 
-    def __hash__(self):
-        return hash(str(self))
 
 class Function:
     def __init__(self, name: str, arg_names: List[str] = None, is_void: bool = True):
@@ -172,9 +158,6 @@ class VariableOp(Operand):
     def __str__(self):
         return f"{self.name}:{str(self.operand)}"
 
-    def __hash__(self):
-        return hash(str(self))
-
 
 class BasicBlock:
     def __init__(self,
@@ -184,7 +167,8 @@ class BasicBlock:
                  basicblock_type: BasicBlockType,
                  num_nested_whiles: int = 0):
         self.type = basicblock_type
-        self.num_nested_whiles = num_nested_whiles
+        self.consume_dead_code = False
+        self.num_nested_while_counter = num_nested_whiles
         self.func: Function = func
         self.basic_block_id: int = func.get_basic_block_id()
         self.instrs: List[Instruction] = []
@@ -280,12 +264,13 @@ class BasicBlock:
                 self.func.instr_counter -= 1
                 return dom_instr.instr_op
 
-        # There is no common subexpression.
-        self.instrs.append(instr)
-        self.instr_dominators[operation].append(instr)
-        if operation == Operation.STORE:
-            # Add store operation to the load's tree as well
-            self.instr_dominators[Operation.LOAD].append(instr)
+        # There is no common subexpression -> Add instruction
+        if not self.consume_dead_code:
+            self.instrs.append(instr)
+            self.instr_dominators[operation].append(instr)
+            if operation == Operation.STORE:
+                # Add store operation to the load's tree as well
+                self.instr_dominators[Operation.LOAD].append(instr)
 
         return instr.instr_op
 
@@ -336,7 +321,7 @@ class SSA:
                             basic_block_type: BasicBlockType):
         new_bb = BasicBlock(self.current_func, self.current_block.sym_table,
                             self.current_block.instr_dominators, basic_block_type,
-                            self.current_block.num_nested_whiles)
+                            self.current_block.num_nested_while_counter)
         if basic_block_type == BasicBlockType.FALL_THROUGH:
             self.current_block.fall_through_block = new_bb
         elif basic_block_type == BasicBlockType.BRANCH:

@@ -117,7 +117,7 @@ class Parser:
     def next(self):
         self.curr = self.lexer.next()
 
-    def error(self, msg: str):
+    def error(self, msg: str = ""):
         raise SmplParserError(self.lexer, msg)
 
     def parse(self):
@@ -162,7 +162,10 @@ class Parser:
         while self.curr.lexeme == Lexeme.SEMICOLON:
             self.consume_if(Lexeme.SEMICOLON)
             if self.curr.lexeme in [Lexeme.LET, Lexeme.CALL, Lexeme.IF, Lexeme.WHILE, Lexeme.RETURN]:
-                self.statement()
+                stat_op = self.statement()
+                if isinstance(stat_op, ssa.InstructionOp) and stat_op.instr.operation == ssa.Operation.BRA:
+                    self.ir.current_block.consume_dead_code = True
+        self.ir.current_block.consume_dead_code = False
         if self.curr.lexeme == Lexeme.SEMICOLON:  # Last semicolon is optional.
             self.consume_if(Lexeme.SEMICOLON)
 
@@ -170,13 +173,13 @@ class Parser:
         if self.curr.lexeme == Lexeme.LET:
             return self.assignment()
         elif self.curr.lexeme == Lexeme.CALL:
-            return self.func_call()  # returns an operand
+            return self.func_call()  # returns an InstructionOp or a FuncCallOp
         elif self.curr.lexeme == Lexeme.IF:
             return self.if_statement()
         elif self.curr.lexeme == Lexeme.WHILE:
             return self.while_statement()
         elif self.curr.lexeme == Lexeme.RETURN:
-            return self.return_statement()  # returns an operand
+            return self.return_statement()  # returns an InstructionOp
         else:
             self.error(f"Expected statement, got {self.curr.lexeme.name}")
 
@@ -208,7 +211,7 @@ class Parser:
         rhs = self.expression()
         if lhs_var.dims is None:    # Integer, update the value of the symbol table
             lhs_var.operand = rhs
-            if not self.ir.current_block.num_nested_whiles:
+            if not self.ir.current_block.num_nested_while_counter:
                 lhs_var.operand = ssa.VariableOp(lhs_var.name, lhs_var.operand)
 
         else:   # Array, lhs is an address, store rhs in the address.
@@ -294,63 +297,31 @@ class Parser:
             if lhs_var.operand != rhs_var.operand:
                 num_phi_instr += 1
                 phi_op = join_block.emit(ssa.Operation.PHI, lhs_var.operand, rhs_var.operand)
-                # print(f"{phi_op.instr}")
                 join_block.set_var_op(ident, phi_op)
-                # Update previous instructions' operands modified by the phi function
-                for instr in join_block.instrs[:join_block_instr_len]:
-                    for i, operand in enumerate(instr.operands):
-                        if operand in [lhs_var.operand, rhs_var.operand]:
-                            # print(f"{instr}")
-                            instr.operands[i] = phi_op
-                            # print(f"->{instr}")
 
                 # While loop -> update values modified by phi in the dominated blocks
-                def dfs(block: ssa.BasicBlock, ops_to_phi: Dict[ssa.Operand, ssa.Operand], phi_op):
-                    print("\nBB", block.basic_block_id, phi_op, lhs_var.operand, rhs_var.operand)
-                    ops_to_phi = dict(ops_to_phi)
-                    for instr in block.instrs:
-                        for i, operand in enumerate(instr.operands):
-                            if operand in ops_to_phi.keys():
-                                print([str(op) for op in ops_to_phi.keys()])
-                                print([str(op) for op in ops_to_phi.values()])
-                                print(f"{instr}")
-                                instr.operands[i] = ops_to_phi[operand]
-                                print(f"->{instr}")
-
-                        if instr.operation == ssa.Operation.PHI:
-                            ops_to_phi[instr.instr_op] = instr.instr_op
-                            for operand in instr.operands:
-                                ops_to_phi[operand] = instr.instr_op
-                                if isinstance(operand, ssa.VariableOp):
-                                    if ident == operand.name:
-                                        phi_op = instr.instr_op
-
-                    if ident in block.sym_table:
-                        block.set_var_op(ident, phi_op)
-
-                    for dom_block in block.dominates:
-                        dfs(dom_block, ops_to_phi, phi_op)
-
                 if is_while:
-                    ops_to_phi = {}
-                    ops_to_phi[lhs_var.operand] = phi_op
-                    ops_to_phi[rhs_var.operand] = phi_op
-                    for dom_block in join_block.dominates:
-                        dfs(dom_block, ops_to_phi, phi_op)
+                    blocks_to_update = [join_block]
+                    # Update operands modified by the phi.
+                    while blocks_to_update:
+                        block = blocks_to_update.pop()
+                        for instr in block.instrs:
+                            if instr == phi_op.instr:
+                                continue
+                            for i, op in enumerate(instr.operands):
+                                if isinstance(op, ssa.VariableOp) and op.name == ident:
+                                    instr.operands[i] = phi_op
+                                    block.set_var_op(ident, phi_op)
+                        blocks_to_update += reversed(block.dominates)
+
+                    # If it is the outermost loop, commit the variable value
+                    if join_block.num_nested_while_counter == 1:
+                        for i, op in enumerate(phi_op.instr.operands):
+                            if isinstance(op, ssa.VariableOp):
+                                phi_op.instr.operands[i] = op.operand
 
         if is_while:
-            join_block.num_nested_whiles -= 1
-            # If the join block is the outermost, unwrap VariableOps.
-            if join_block.num_nested_whiles == 0:
-                blocks_to_update = [join_block]
-                while blocks_to_update:
-                    block = blocks_to_update.pop()
-                    blocks_to_update += reversed(block.dominates)
-                    for instr in block.instrs:
-                        for i, operand in enumerate(instr.operands):
-                            if isinstance(operand, ssa.VariableOp):
-                                instr.operands[i] = operand.operand
-
+            join_block.num_nested_while_counter -= 1  # Decrease the nested while loop counter
             join_block.instrs = join_block.instrs[-num_phi_instr:] + join_block.instrs[:-num_phi_instr]
 
     def if_statement(self) -> None:
@@ -413,7 +384,7 @@ class Parser:
         join_block = self.ir.get_new_basic_block(ssa.BasicBlockType.JOIN)
         orig_block.fall_through_block = join_block
         self.ir.set_current_block(join_block)
-        join_block.num_nested_whiles += 1
+        join_block.num_nested_while_counter += 1
 
         # Add cmp to the join block
         cond_branch_op = self.relation()  # Second operand is not added yet
@@ -443,21 +414,25 @@ class Parser:
         cmp = self.ir.emit(ssa.Operation.CMP, lhs, rhs)
         if rel_token.value == "==":  # beq
             return self.ir.emit(ssa.Operation.BEQ, cmp)
-        elif rel_token.value == "!=": # bne
+        elif rel_token.value == "!=":  # bne
             return self.ir.emit(ssa.Operation.BNE, cmp)
         elif rel_token.value == "<":  # rhs is equal or less than lhs -> bge
             return self.ir.emit(ssa.Operation.BGE, cmp)
-        elif rel_token.value == "<=": # bgt
+        elif rel_token.value == "<=":  # bgt
             return self.ir.emit(ssa.Operation.BGT, cmp)
         elif rel_token.value == ">":  # blt
             return self.ir.emit(ssa.Operation.BLT, cmp)
-        elif rel_token.value == ">=": # ble
+        elif rel_token.value == ">=":  # ble
             return self.ir.emit(ssa.Operation.BLE, cmp)
 
     def return_statement(self) -> ssa.Operand:
         self.consume_if(Lexeme.RETURN)
         if self.curr.lexeme in [Lexeme.IDENT, Lexeme.NUMBER, Lexeme.LPAREN, Lexeme.CALL]:
-            return self.expression()
+            self.ir.current_block.decl_var("@R31")
+            self.ir.current_block.sym_table["@R31"].operand = self.expression()
+            return self.ir.emit(ssa.Operation.BRA, ssa.VarAddressOp("CallLoc"))
+        else:
+            self.error()
 
     def expression(self) -> ssa.Operand:
         lhs = self.term()
@@ -465,9 +440,16 @@ class Parser:
             token = self.consume_if(Lexeme.PLUS, Lexeme.MINUS)
             rhs = self.term()
             if token.lexeme == Lexeme.PLUS:
-                lhs = self.ir.emit(ssa.Operation.ADD, lhs, rhs)
+                # Immediate Operation Optimization
+                if isinstance(lhs, ssa.ImmediateOp) and isinstance(rhs, ssa.ImmediateOp):
+                    lhs = ssa.ImmediateOp(lhs.value + rhs.value)
+                else:
+                    lhs = self.ir.emit(ssa.Operation.ADD, lhs, rhs)
             elif token.lexeme == Lexeme.MINUS:
-                lhs = self.ir.emit(ssa.Operation.SUB, lhs, rhs)
+                if isinstance(lhs, ssa.ImmediateOp) and isinstance(rhs, ssa.ImmediateOp):
+                    lhs = ssa.ImmediateOp(lhs.value - rhs.value)
+                else:
+                    lhs = self.ir.emit(ssa.Operation.SUB, lhs, rhs)
         return lhs
 
     def term(self) -> ssa.Operand:
@@ -475,10 +457,17 @@ class Parser:
         while self.curr.lexeme in [Lexeme.ASTERISK, Lexeme.SLASH]:
             token = self.consume_if(Lexeme.ASTERISK, Lexeme.SLASH)
             rhs = self.factor()
+            # Immediate Operation Optimization
             if token.lexeme == Lexeme.ASTERISK:
-                lhs = self.ir.emit(ssa.Operation.MUL, lhs, rhs)
+                if isinstance(lhs, ssa.ImmediateOp) and isinstance(rhs, ssa.ImmediateOp):
+                    lhs = ssa.ImmediateOp(lhs.value * rhs.value)
+                else:
+                    lhs = self.ir.emit(ssa.Operation.MUL, lhs, rhs)
             elif token.lexeme == Lexeme.SLASH:
-                lhs = self.ir.emit(ssa.Operation.DIV, lhs, rhs)
+                if isinstance(lhs, ssa.ImmediateOp) and isinstance(rhs, ssa.ImmediateOp):
+                    lhs = ssa.ImmediateOp(int(lhs.value / rhs.value))
+                else:
+                    lhs = self.ir.emit(ssa.Operation.DIV, lhs, rhs)
         return lhs
 
     def factor(self) -> ssa.Operand:
