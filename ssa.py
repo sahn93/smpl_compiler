@@ -144,7 +144,7 @@ class Variable:
         self.operand = operand
 
     def __eq__(self, other):
-        return isinstance(other, Variable) and self.name == other.name and self.operand == other.operand
+        return isinstance(other, Variable) and self.name == other.name
 
 
 class VariableOp(Operand):
@@ -156,7 +156,7 @@ class VariableOp(Operand):
         return isinstance(other, VariableOp) and self.name == other.name and self.operand == other.operand
 
     def __str__(self):
-        return f"{self.name}:{str(self.operand)}"
+        return f"{self.name}:{self.operand}"
 
 
 class BasicBlock:
@@ -165,10 +165,10 @@ class BasicBlock:
                  sym_table: Dict[str, Optional[Variable]],
                  instr_dominators: DefaultDict[Operation, List[Instruction]],
                  basic_block_type: BasicBlockType,
-                 num_nested_whiles: int = 0):
+                 num_nested_while_counter: int = 0):
         self.type = basic_block_type
         self.consume_dead_code = False
-        self.num_nested_while_counter = num_nested_whiles
+        self.num_nested_while_counter = num_nested_while_counter
         self.func: Function = func
         self.basic_block_id: int = func.get_basic_block_id()
         self.instrs: List[Instruction] = []
@@ -182,7 +182,7 @@ class BasicBlock:
 
     def decl_var(self, ident: str, dims: Optional[List[int]] = None):
         if dims is None:
-            self.sym_table[ident] = Variable(ident, dims, None)
+            self.sym_table[ident] = Variable(ident, dims, UninitializedVarOp(ident, self))
         else:
             self.sym_table[ident] = Variable(ident, dims, VarAddressOp(ident))
 
@@ -193,10 +193,10 @@ class BasicBlock:
         if ident not in self.sym_table:
             raise Exception(f"{ident} is not declared in {self.func.name}.")
 
-        if self.sym_table[ident].operand is None:
-            warnings.warn(f"{ident} is not initialized."
-                          f" Assign an initial value of zero.", UninitializedVariableWarning)
-            self.sym_table[ident].operand = ImmediateOp(0)
+        # Wrap by VariableOp if the variable is nested by while loops and the value can be changed.
+        if self.num_nested_while_counter > 0 and not isinstance(self.sym_table[ident].operand, VariableOp):
+            self.sym_table[ident].operand = VariableOp(ident, self.sym_table[ident].operand)
+            # print(f"BB{self.basic_block_id}:{self.sym_table[ident].operand} is wrapped")
 
         return self.sym_table[ident]
 
@@ -257,12 +257,13 @@ class BasicBlock:
         instr = Instruction(self.func.get_instr_id(), operation, *operands)
 
         # Common Subexpression Elimination
-        for dom_instr in reversed(self.instr_dominators[operation]):
-            if dom_instr.operation == Operation.STORE:
-                break  # For load operation, forget everything before the store operation
-            if instr == dom_instr:
-                self.func.instr_counter -= 1
-                return dom_instr.instr_op
+        if operation not in [Operation.READ, Operation.WRITE, Operation.WRITE_NL]:
+            for dom_instr in reversed(self.instr_dominators[operation]):
+                if dom_instr.operation == Operation.STORE:
+                    break  # For load operation, forget everything before the store operation
+                if instr == dom_instr:
+                    self.func.instr_counter -= 1
+                    return dom_instr.instr_op
 
         # There is no common subexpression -> Add instruction
         if not self.consume_dead_code:
@@ -273,6 +274,18 @@ class BasicBlock:
                 self.instr_dominators[Operation.LOAD].append(instr)
 
         return instr.instr_op
+
+
+class UninitializedVarOp(Operand):
+    def __init__(self, name: str, basic_block: BasicBlock):
+        self.name = name
+        self.basic_block = basic_block
+
+    def get_default_val_op(self):
+        warnings.warn(f"Trying to use variable \033[4m{self.name}\033[0m before initializing. "
+                      f"set default value as zero.")
+        self.basic_block.set_var_op(self.name, ImmediateOp(0))
+        return self.basic_block.get_var(self.name).operand
 
 
 class SSA:
