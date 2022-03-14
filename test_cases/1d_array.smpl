@@ -1,0 +1,11 @@
+main
+var i;
+array[3] arr;
+{
+    let i <- 0;
+    while i < 3 do
+        let arr[i] <- 7;
+        call OutputNum(arr[i]);
+        let i <- i + 1
+    od
+}.
