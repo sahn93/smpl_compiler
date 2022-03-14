@@ -211,9 +211,8 @@ class Parser:
         rhs = self.expression()
         if lhs_var.dims is None:    # Integer, update the value of the symbol table
             lhs_var.operand = rhs
-            if not self.ir.current_block.num_nested_while_counter:
+            if self.ir.current_block.num_nested_while_counter > 0:
                 lhs_var.operand = ssa.VariableOp(lhs_var.name, lhs_var.operand)
-
         else:   # Array, lhs is an address, store rhs in the address.
             self.ir.current_block.emit(ssa.Operation.STORE, rhs, lhs)
 

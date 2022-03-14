@@ -164,9 +164,9 @@ class BasicBlock:
                  func: Function,
                  sym_table: Dict[str, Optional[Variable]],
                  instr_dominators: DefaultDict[Operation, List[Instruction]],
-                 basicblock_type: BasicBlockType,
+                 basic_block_type: BasicBlockType,
                  num_nested_whiles: int = 0):
-        self.type = basicblock_type
+        self.type = basic_block_type
         self.consume_dead_code = False
         self.num_nested_while_counter = num_nested_whiles
         self.func: Function = func
