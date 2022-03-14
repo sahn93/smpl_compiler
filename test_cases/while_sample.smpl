@@ -4,7 +4,8 @@ var a, b, c; {
     let b <- a;
     while a < 100 do
         let b <- a + 1;
+        let c <- a + 1;
         let a <- a * 2;
-        let c <- a;
+        call OutputNum(c)
     od
 }.

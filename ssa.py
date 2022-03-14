@@ -287,6 +287,14 @@ class UninitializedVarOp(Operand):
         self.basic_block.set_var_op(self.name, ImmediateOp(0))
         return self.basic_block.get_var(self.name).operand
 
+    def __str__(self):
+        return f"#0"
+
+    def __eq__(self, other):
+        return (isinstance(other, UninitializedVarOp)
+                and self.name == other.name and self.basic_block == other.basic_block)
+
+
 
 class SSA:
     def __init__(self):

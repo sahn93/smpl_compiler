@@ -343,7 +343,6 @@ class Parser:
                 block.num_nested_while_counter -= 1
                 while_dom_blocks += reversed(block.dominates)
                 # Confirm(Unwrap) VariableOps if all the while loop finishes.
-                # Do CSE if available.
                 if block.num_nested_while_counter == 0:
                     for instr in block.instrs:
                         for i, op in enumerate(instr.operands):
