@@ -288,7 +288,6 @@ class Parser:
                           right_parent_block: ssa.BasicBlock,
                           is_while: bool = False) -> None:
         self.ir.set_current_block(join_block)
-        join_block_instr_len = len(join_block.instrs)
         num_phi_instr = 0
 
         for ident, var in join_block.sym_table.items():
