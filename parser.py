@@ -202,8 +202,8 @@ class Parser:
                 stride = 4 * reduce(lambda a, b: a*b, var.dims[idx_pos+1:])
             else:
                 stride = 4  # bytes
-            offset_op = self.ir.emit(ssa.Operation.MUL, idx_op, ssa.ImmediateOp(stride))
-            var_address_op = self.ir.emit(ssa.Operation.ADDA, var_address_op, offset_op)
+            offset_op = self.mul(idx_op, ssa.ImmediateOp(stride))
+            var_address_op = self.add(var_address_op, offset_op, is_adda=True)
             self.consume_if(Lexeme.RBRACKET)
             idx_pos += 1
         return var, var_address_op
@@ -463,6 +463,23 @@ class Parser:
         else:
             self.error()
 
+    def add(self, lhs: ssa.Operand, rhs: ssa.Operand, is_adda=False) -> ssa.Operand:
+        res = None
+        # Immediate Operation Optimization
+        if isinstance(lhs, ssa.ImmediateOp):
+            if lhs.value == 0:
+                res = rhs  # return 0 + rhs = rhs
+            elif isinstance(rhs, ssa.ImmediateOp):
+                res = ssa.ImmediateOp(lhs.value + rhs.value)  # return value without adding instruction
+        elif isinstance(rhs, ssa.ImmediateOp) and rhs.value == 0:
+            res = lhs  # return lhs + 0 = lhs
+        else:
+            operation = ssa.Operation.ADD
+            if is_adda:
+                operation = ssa.Operation.ADDA
+            res = self.ir.emit(operation, lhs, rhs)
+        return res
+
     def expression(self) -> ssa.Operand:
         lhs = self.term()
         while self.curr.lexeme in [Lexeme.PLUS, Lexeme.MINUS]:
@@ -473,17 +490,35 @@ class Parser:
             if isinstance(rhs, ssa.UninitializedVarOp):
                 rhs = rhs.get_default_val_op()
             if token.lexeme == Lexeme.PLUS:
-                # Immediate Operation Optimization
-                if isinstance(lhs, ssa.ImmediateOp) and isinstance(rhs, ssa.ImmediateOp):
-                    lhs = ssa.ImmediateOp(lhs.value + rhs.value)
-                else:
-                    lhs = self.ir.emit(ssa.Operation.ADD, lhs, rhs)
+                lhs = self.add(lhs, rhs)
             elif token.lexeme == Lexeme.MINUS:
-                if isinstance(lhs, ssa.ImmediateOp) and isinstance(rhs, ssa.ImmediateOp):
-                    lhs = ssa.ImmediateOp(lhs.value - rhs.value)
+                # Immediate Operation Optimization
+                if isinstance(rhs, ssa.ImmediateOp):
+                    if rhs.value == 0:
+                        pass  # return lhs - 0 = lhs
+                    elif isinstance(lhs, ssa.ImmediateOp):
+                        lhs = ssa.ImmediateOp(lhs.value - rhs.value)  # return value without adding instruction
                 else:
                     lhs = self.ir.emit(ssa.Operation.SUB, lhs, rhs)
         return lhs
+
+    def mul(self, lhs: ssa.Operand, rhs: ssa.Operand) -> ssa.Operand:
+        ret = None
+        if isinstance(lhs, ssa.ImmediateOp):
+            if lhs.value == 0:
+                ret = lhs  # return lhs = 0
+            elif lhs.value == 1:
+                ret = rhs  # return 1 * rhs = rhs
+            elif isinstance(rhs, ssa.ImmediateOp):
+                ret = ssa.ImmediateOp(lhs.value * rhs.value)  # return value without adding instruction
+        elif isinstance(rhs, ssa.ImmediateOp):
+            if rhs.value == 0:
+                ret = rhs  # return lhs * rhs(=0) = rhs(=0)
+            elif rhs.value == 1:
+                ret = lhs  # return lhs * 1 = lhs
+        else:
+            ret = self.ir.emit(ssa.Operation.MUL, lhs, rhs)
+        return ret
 
     def term(self) -> ssa.Operand:
         lhs = self.factor()
@@ -492,13 +527,17 @@ class Parser:
             rhs = self.factor()
             # Immediate Operation Optimization
             if token.lexeme == Lexeme.ASTERISK:
-                if isinstance(lhs, ssa.ImmediateOp) and isinstance(rhs, ssa.ImmediateOp):
-                    lhs = ssa.ImmediateOp(lhs.value * rhs.value)
-                else:
-                    lhs = self.ir.emit(ssa.Operation.MUL, lhs, rhs)
+                lhs = self.mul(lhs, rhs)
             elif token.lexeme == Lexeme.SLASH:
-                if isinstance(lhs, ssa.ImmediateOp) and isinstance(rhs, ssa.ImmediateOp):
-                    lhs = ssa.ImmediateOp(int(lhs.value / rhs.value))
+                if isinstance(lhs, ssa.ImmediateOp) and lhs.value == 0:
+                    pass  # return lhs(=0) / rhs = lhs(=0)
+                elif isinstance(rhs, ssa.ImmediateOp):
+                    if rhs.value == 0:
+                        self.error(f"{lhs}/{rhs}: Divide by zero error.")
+                    elif rhs.value == 1:
+                        pass  # return lhs / rhs(=1) = lhs
+                    elif isinstance(lhs, ssa.ImmediateOp):
+                        lhs = ssa.ImmediateOp(int(lhs.value / rhs.value))
                 else:
                     lhs = self.ir.emit(ssa.Operation.DIV, lhs, rhs)
         return lhs

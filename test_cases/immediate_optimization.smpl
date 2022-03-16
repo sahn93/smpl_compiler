@@ -1,0 +1,9 @@
+main
+var a;
+array[10][5][2] arr;
+{
+    let a <- call InputNum();
+    let arr[1][2][0] <- a;
+    call OutputNum(a);
+    call OutputNewLine();
+}.
