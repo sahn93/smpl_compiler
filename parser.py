@@ -191,10 +191,10 @@ class Parser:
         ident = self.consume_if(Lexeme.IDENT).value
         var = self.ir.current_block.get_var(ident)
         # operand: None (uninitialized int) or InstructionOp (initialized int) or VarAddressOp (array)
-        var_address_op = var.operand
+        var_op = var.operand
         idx_pos = 0
         accumulated_offset = 0
-        accumulated_offset_op = ssa.ImmediateOp(0)
+        index_var_sum_op = None
         while self.curr.lexeme == Lexeme.LBRACKET:  # is Array.
             self.consume_if(Lexeme.LBRACKET)
             idx_op = self.expression()
@@ -210,17 +210,23 @@ class Parser:
             if isinstance(offset_op, ssa.ImmediateOp):
                 accumulated_offset += offset_op.value
             else:
-                accumulated_offset_op = self.add(ssa.ImmediateOp(accumulated_offset), offset_op)
-                accumulated_offset = 0
+                if index_var_sum_op:
+                    index_var_sum_op = self.add(index_var_sum_op, offset_op)
+                else:
+                    index_var_sum_op = offset_op
             self.consume_if(Lexeme.RBRACKET)
             idx_pos += 1
+
+        total_offset_op = None
         if accumulated_offset > 0:
-            accumulated_offset_op = self.add(ssa.ImmediateOp(accumulated_offset), accumulated_offset_op)
-        if accumulated_offset_op != ssa.ImmediateOp(0):
-            var_address_op = self.add(var_address_op, accumulated_offset_op, is_adda=True)
-            if is_read:
-                var_address_op = self.ir.emit(ssa.Operation.LOAD, var_address_op)
-        return var, var_address_op
+            total_offset_op = ssa.ImmediateOp(accumulated_offset)
+        if index_var_sum_op:
+            total_offset_op = self.add(total_offset_op, index_var_sum_op)
+        if total_offset_op:
+            var_op = self.add(var_op, total_offset_op, is_adda=True)
+        if var.dims and is_read:
+            var_op = self.ir.emit(ssa.Operation.LOAD, var_op)
+        return var, var_op
 
     def assignment(self) -> None:
         self.consume_if(Lexeme.LET)
@@ -400,7 +406,7 @@ class Parser:
 
             rhs_block = branch_last_block  # Set rhs block for phi function
         else:
-            # Without then statements
+            # Without else statements, branch directly to the join block
             join_block = self.ir.get_new_basic_block(ssa.BasicBlockType.JOIN)
             fall_through_last_block.branch_block = join_block
             orig_block.branch_block = join_block
@@ -471,9 +477,9 @@ class Parser:
     def return_statement(self) -> ssa.Operand:
         self.consume_if(Lexeme.RETURN)
         if self.curr.lexeme in [Lexeme.IDENT, Lexeme.NUMBER, Lexeme.LPAREN, Lexeme.CALL]:
-            self.ir.current_block.decl_var("@R31")
-            self.ir.current_block.set_var_op("@R31", self.expression())
-            return self.ir.emit(ssa.Operation.BRA, ssa.VarAddressOp("CallLoc"))
+            self.ir.current_block.decl_var("@reserved_memory_for_return")
+            self.ir.current_block.set_var_op("@reserved_memory_for_return", self.expression())
+            return self.ir.emit(ssa.Operation.BRA, ssa.VarAddressOp("R31(=Return Address)"))
         else:
             self.error()
 

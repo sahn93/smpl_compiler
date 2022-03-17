@@ -335,6 +335,8 @@ class SSA:
             for operand_name in arg_names:
                 func_root_bb.decl_var(operand_name)
                 func_root_bb.sym_table[operand_name].operand = VarAddressOp(operand_name)
+                func_root_bb.sym_table[operand_name].operand = \
+                    func_root_bb.emit(Operation.LOAD, func_root_bb.sym_table[operand_name].operand)
         return func_root_bb
 
     def get_new_basic_block(self,
