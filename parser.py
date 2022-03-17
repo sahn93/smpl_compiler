@@ -220,8 +220,11 @@ class Parser:
         total_offset_op = None
         if accumulated_offset > 0:
             total_offset_op = ssa.ImmediateOp(accumulated_offset)
-        if index_var_sum_op:
-            total_offset_op = self.add(total_offset_op, index_var_sum_op)
+            if index_var_sum_op:
+                total_offset_op = self.add(total_offset_op, index_var_sum_op)
+        elif index_var_sum_op:
+            total_offset_op = index_var_sum_op
+
         if total_offset_op:
             var_op = self.add(var_op, total_offset_op, is_adda=True)
         if var.dims and is_read:
@@ -399,7 +402,7 @@ class Parser:
 
             # Create Join block
             self.ir.set_current_block(orig_block)
-            join_block = self.ir.get_new_basic_block(ssa.BasicBlockType.JOIN)
+            join_block = self.ir.get_new_basic_block(ssa.BasicBlockType.IF_JOIN)
             fall_through_last_block.branch_block = join_block
             branch_last_block.fall_through_block = join_block
             join_branch_op.instr.operands.append(ssa.BasicBlockOp(join_block.basic_block_id))
@@ -407,7 +410,7 @@ class Parser:
             rhs_block = branch_last_block  # Set rhs block for phi function
         else:
             # Without else statements, branch directly to the join block
-            join_block = self.ir.get_new_basic_block(ssa.BasicBlockType.JOIN)
+            join_block = self.ir.get_new_basic_block(ssa.BasicBlockType.IF_JOIN)
             fall_through_last_block.branch_block = join_block
             orig_block.branch_block = join_block
             join_block_op = ssa.BasicBlockOp(join_block.basic_block_id)
@@ -427,7 +430,7 @@ class Parser:
         orig_block.num_nested_while_counter += 1
 
         # Create a join block
-        join_block = self.ir.get_new_basic_block(ssa.BasicBlockType.JOIN)
+        join_block = self.ir.get_new_basic_block(ssa.BasicBlockType.WHILE_JOIN)
         orig_block.fall_through_block = join_block
         self.ir.set_current_block(join_block)
 
@@ -517,7 +520,10 @@ class Parser:
                     elif isinstance(lhs, ssa.ImmediateOp):
                         lhs = ssa.ImmediateOp(lhs.value - rhs.value)  # return value without adding instruction
                 else:
-                    lhs = self.ir.emit(ssa.Operation.SUB, lhs, rhs)
+                    if isinstance(lhs, ssa.ImmediateOp) and lhs.value == 0:
+                        lhs = self.ir.emit(ssa.Operation.NEG, rhs)
+                    else:
+                        lhs = self.ir.emit(ssa.Operation.SUB, lhs, rhs)
         return lhs
 
     def mul(self, lhs: ssa.Operand, rhs: ssa.Operand) -> ssa.Operand:
