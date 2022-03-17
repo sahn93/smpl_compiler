@@ -257,7 +257,7 @@ class BasicBlock:
         instr = Instruction(self.func.get_instr_id(), operation, *operands)
 
         # Common Subexpression Elimination
-        if operation not in [Operation.READ, Operation.WRITE, Operation.WRITE_NL]:
+        if operation not in [Operation.READ, Operation.WRITE, Operation.WRITE_NL, Operation.ADDA]:
             for dom_instr in reversed(self.instr_dominators[operation]):
                 if dom_instr.operation == Operation.STORE:
                     break  # For load operation, forget everything before the store operation
@@ -268,7 +268,8 @@ class BasicBlock:
         # There is no common subexpression -> Add instruction
         if not self.consume_dead_code:
             self.instrs.append(instr)
-            self.instr_dominators[operation].append(instr)
+            if operation not in [Operation.READ, Operation.WRITE, Operation.WRITE_NL, Operation.ADDA]:
+                self.instr_dominators[operation].append(instr)
             if operation == Operation.STORE:
                 # Add store operation to the load's tree as well
                 self.instr_dominators[Operation.LOAD].append(instr)

@@ -565,7 +565,7 @@ class Parser:
         elif self.curr.lexeme == Lexeme.CALL:
             operand = self.func_call()
         else:
-            raise SmplParserError
+            raise SmplParserError(self.lexer, f"Tried to parse factor, but current lexeme was {self.curr.lexeme}")
         return operand
 
     def func_call(self) -> ssa.Operand:
