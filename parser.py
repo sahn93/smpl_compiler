@@ -187,11 +187,11 @@ class Parser:
         else:
             self.error(f"Expected statement, got {self.curr.lexeme.name}")
 
-    def designator(self) -> Tuple[ssa.Variable, ssa.Operand]:
+    def designator(self, is_read=True) -> Tuple[ssa.Variable, ssa.Operand]:
         ident = self.consume_if(Lexeme.IDENT).value
         var = self.ir.current_block.get_var(ident)
         # operand: None (uninitialized int) or InstructionOp (initialized int) or VarAddressOp (array)
-        var_address_op = base_address_op = var.operand
+        var_address_op = var.operand
         idx_pos = 0
         accumulated_offset = 0
         accumulated_offset_op = ssa.ImmediateOp(0)
@@ -210,22 +210,21 @@ class Parser:
             if isinstance(offset_op, ssa.ImmediateOp):
                 accumulated_offset += offset_op.value
             else:
-                if accumulated_offset > 0:
-                    accumulated_offset_op = self.add(ssa.ImmediateOp(accumulated_offset), offset_op)
-                    accumulated_offset = 0
-                else:
-                    accumulated_offset_op = offset_op
+                accumulated_offset_op = self.add(ssa.ImmediateOp(accumulated_offset), offset_op)
+                accumulated_offset = 0
             self.consume_if(Lexeme.RBRACKET)
             idx_pos += 1
         if accumulated_offset > 0:
             accumulated_offset_op = self.add(ssa.ImmediateOp(accumulated_offset), accumulated_offset_op)
         if accumulated_offset_op != ssa.ImmediateOp(0):
             var_address_op = self.add(var_address_op, accumulated_offset_op, is_adda=True)
+            if is_read:
+                var_address_op = self.ir.emit(ssa.Operation.LOAD, var_address_op)
         return var, var_address_op
 
     def assignment(self) -> None:
         self.consume_if(Lexeme.LET)
-        lhs_var, lhs = self.designator()
+        lhs_var, lhs = self.designator(is_read=False)
         self.consume_if(Lexeme.LARROW)
         rhs = self.expression()    # all symbol table lookup should be initialized.
         if isinstance(rhs, ssa.UninitializedVarOp):

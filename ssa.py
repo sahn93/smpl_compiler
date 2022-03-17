@@ -196,7 +196,6 @@ class BasicBlock:
         # Wrap by VariableOp if the variable is nested by while loops and the value can be changed.
         if self.num_nested_while_counter > 0 and not isinstance(self.sym_table[ident].operand, VariableOp):
             self.sym_table[ident].operand = VariableOp(ident, self.sym_table[ident].operand)
-            # print(f"BB{self.basic_block_id}:{self.sym_table[ident].operand} is wrapped")
 
         return self.sym_table[ident]
 
@@ -294,7 +293,6 @@ class UninitializedVarOp(Operand):
     def __eq__(self, other):
         return (isinstance(other, UninitializedVarOp)
                 and self.name == other.name and self.basic_block == other.basic_block)
-
 
 
 class SSA:
