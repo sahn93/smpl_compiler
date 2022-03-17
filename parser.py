@@ -191,8 +191,10 @@ class Parser:
         ident = self.consume_if(Lexeme.IDENT).value
         var = self.ir.current_block.get_var(ident)
         # operand: None (uninitialized int) or InstructionOp (initialized int) or VarAddressOp (array)
-        var_address_op = var.operand
+        var_address_op = base_address_op = var.operand
         idx_pos = 0
+        accumulated_offset = 0
+        accumulated_offset_op = ssa.ImmediateOp(0)
         while self.curr.lexeme == Lexeme.LBRACKET:  # is Array.
             self.consume_if(Lexeme.LBRACKET)
             idx_op = self.expression()
@@ -203,9 +205,22 @@ class Parser:
             else:
                 stride = 4  # bytes
             offset_op = self.mul(idx_op, ssa.ImmediateOp(stride))
-            var_address_op = self.add(var_address_op, offset_op, is_adda=True)
+
+            # Immediate Operation Optimization
+            if isinstance(offset_op, ssa.ImmediateOp):
+                accumulated_offset += offset_op.value
+            else:
+                if accumulated_offset > 0:
+                    accumulated_offset_op = self.add(ssa.ImmediateOp(accumulated_offset), offset_op)
+                    accumulated_offset = 0
+                else:
+                    accumulated_offset_op = offset_op
             self.consume_if(Lexeme.RBRACKET)
             idx_pos += 1
+        if accumulated_offset > 0:
+            accumulated_offset_op = self.add(ssa.ImmediateOp(accumulated_offset), accumulated_offset_op)
+        if accumulated_offset_op != ssa.ImmediateOp(0):
+            var_address_op = self.add(var_address_op, accumulated_offset_op, is_adda=True)
         return var, var_address_op
 
     def assignment(self) -> None:
@@ -464,21 +479,19 @@ class Parser:
             self.error()
 
     def add(self, lhs: ssa.Operand, rhs: ssa.Operand, is_adda=False) -> ssa.Operand:
-        res = None
         # Immediate Operation Optimization
         if isinstance(lhs, ssa.ImmediateOp):
             if lhs.value == 0:
-                res = rhs  # return 0 + rhs = rhs
+                return rhs  # return 0 + rhs = rhs
             elif isinstance(rhs, ssa.ImmediateOp):
-                res = ssa.ImmediateOp(lhs.value + rhs.value)  # return value without adding instruction
+                return ssa.ImmediateOp(lhs.value + rhs.value)  # return value without adding instruction
         elif isinstance(rhs, ssa.ImmediateOp) and rhs.value == 0:
-            res = lhs  # return lhs + 0 = lhs
-        else:
-            operation = ssa.Operation.ADD
-            if is_adda:
-                operation = ssa.Operation.ADDA
-            res = self.ir.emit(operation, lhs, rhs)
-        return res
+            return lhs  # return lhs + 0 = lhs
+
+        operation = ssa.Operation.ADD
+        if is_adda:
+            operation = ssa.Operation.ADDA
+        return self.ir.emit(operation, lhs, rhs)
 
     def expression(self) -> ssa.Operand:
         lhs = self.term()
@@ -503,22 +516,20 @@ class Parser:
         return lhs
 
     def mul(self, lhs: ssa.Operand, rhs: ssa.Operand) -> ssa.Operand:
-        ret = None
         if isinstance(lhs, ssa.ImmediateOp):
             if lhs.value == 0:
-                ret = lhs  # return lhs = 0
+                return lhs  # return lhs = 0
             elif lhs.value == 1:
-                ret = rhs  # return 1 * rhs = rhs
+                return rhs  # return 1 * rhs = rhs
             elif isinstance(rhs, ssa.ImmediateOp):
-                ret = ssa.ImmediateOp(lhs.value * rhs.value)  # return value without adding instruction
+                return ssa.ImmediateOp(lhs.value * rhs.value)  # return value without adding instruction
         elif isinstance(rhs, ssa.ImmediateOp):
             if rhs.value == 0:
-                ret = rhs  # return lhs * rhs(=0) = rhs(=0)
+                return rhs  # return lhs * rhs(=0) = rhs(=0)
             elif rhs.value == 1:
-                ret = lhs  # return lhs * 1 = lhs
-        else:
-            ret = self.ir.emit(ssa.Operation.MUL, lhs, rhs)
-        return ret
+                return lhs  # return lhs * 1 = lhs
+
+        return self.ir.emit(ssa.Operation.MUL, lhs, rhs)
 
     def term(self) -> ssa.Operand:
         lhs = self.factor()

@@ -1,9 +1,10 @@
 main
-var a;
-array[10][5][2] arr;
+var a, b;
+array[10][5][2][3] arr;
 {
     let a <- call InputNum();
-    let arr[1][2][0] <- a;
+    let b <- 3 + a;
+    let arr[2][2][b][2] <- a;
     call OutputNum(a);
     call OutputNewLine();
 }.
