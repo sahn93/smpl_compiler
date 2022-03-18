@@ -414,7 +414,6 @@ class SSA:
             self.current_block.fall_through_block = new_bb
         elif basic_block_type == BasicBlockType.BRANCH:
             self.current_block.branch_block = new_bb
-        new_bb.preds.append(self.current_block)
         self.current_block.dominates.append(new_bb)
         self.current_func.last_block = new_bb
         return new_bb

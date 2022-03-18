@@ -22,10 +22,10 @@ def main():
     smpl_parser.parse()
     print(ir.dot())
 
-    # register_allocator = RegisterAllocator(ir)
-    # register_allocator.allocate_registers()
-    #
-    # print(ir.dot())
+    register_allocator = RegisterAllocator(ir)
+    register_allocator.allocate_registers()
+
+    print(ir.dot())
 
 
 if __name__ == "__main__":

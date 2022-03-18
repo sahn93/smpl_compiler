@@ -376,6 +376,7 @@ class Parser:
         # Create fall-through block
         orig_block = self.ir.current_block
         fall_through_root_block = self.ir.get_new_basic_block(ssa.BasicBlockType.FALL_THROUGH)
+        fall_through_root_block.preds = [orig_block]
 
         # emit incomplete branch instruction to the original block
         cond_branch_op = self.relation()  # Second operand is not added yet
@@ -394,6 +395,7 @@ class Parser:
 
             # Create branch block
             branch_root_block = self.ir.get_new_basic_block(ssa.BasicBlockType.BRANCH)
+            branch_root_block.preds = [orig_block]
             cond_branch_op.instr.operands.append(ssa.BasicBlockOp(branch_root_block.basic_block_id))
             self.ir.set_current_block(branch_root_block)
             self.stat_sequence()
@@ -419,6 +421,7 @@ class Parser:
             rhs_block = orig_block  # Set rhs block for phi function
 
         # Move to join block and add phi functions
+        join_block.preds = [fall_through_last_block, rhs_block]
         self.add_phi_functions(join_block, fall_through_last_block, rhs_block)
 
         self.consume_if(Lexeme.FI)
@@ -430,6 +433,7 @@ class Parser:
 
         # Create a join block
         join_block = self.ir.get_new_basic_block(ssa.BasicBlockType.WHILE_JOIN)
+        join_block.preds = [orig_block]
         orig_block.fall_through_block = join_block
         self.ir.set_current_block(join_block)
 
@@ -439,18 +443,20 @@ class Parser:
 
         # Create a branch block(while body) which is dominated by the join block
         branch_root_block = self.ir.get_new_basic_block(ssa.BasicBlockType.BRANCH)
+        branch_root_block.preds = [join_block]
         cond_branch_op.instr.operands.append(ssa.BasicBlockOp(branch_root_block.basic_block_id))
         self.ir.set_current_block(branch_root_block)
         self.stat_sequence()
         branch_last_block = self.ir.current_block
         branch_last_block.fall_through_block = join_block
-        join_block.preds.append(branch_last_block)
+        join_block.preds = [orig_block, branch_last_block]
 
         # Back to the join block and create the phi functions between the orig and join blocks
         self.add_phi_functions(join_block, orig_block, branch_last_block, is_while=True)
 
         # Create a fall-through block followed by the while statement
         fall_through_block = self.ir.get_new_basic_block(ssa.BasicBlockType.FALL_THROUGH)
+        fall_through_block.preds = [join_block]
         self.ir.set_current_block(fall_through_block)
 
         self.consume_if(Lexeme.OD)

@@ -68,7 +68,7 @@ class RegisterAllocator:
 
     def __init__(self, ir: ssa.SSA):
         self.ir = ir
-        self.phis: List[ssa.Instruction] = []
+        self.phis: Dict[ssa.Instruction, ssa.BasicBlock] = dict()
         self.id_to_node: Dict[int, Node] = {}
         self.nodes_min_heap: List[Node] = []
         heapify(self.nodes_min_heap)
@@ -84,8 +84,8 @@ class RegisterAllocator:
             # Build an interference graph from the last block without resolving phis.
             self.build_interference_graph(root_block.func.last_block)
 
-            for i, node in self.id_to_node.items():
-                print(node, [str(adj_node) for adj_node in node.adj_nodes])
+            # for i, node in self.id_to_node.items():
+            #     print(node, [str(adj_node) for adj_node in node.adj_nodes])
 
             # Resolve all phi functions
             self.resolve_phis()
@@ -102,8 +102,11 @@ class RegisterAllocator:
             # Allocate register for each node.
             self.color()
 
+            # Remove Phis.
+            self.remove_phis()
+
             # Init for the next function
-            self.phis = []
+            self.phis = dict()
             self.id_to_node = {}
             self.nodes_min_heap = []
             heapify(self.nodes_min_heap)
@@ -119,17 +122,18 @@ class RegisterAllocator:
                 phi_lhs, phi_rhs = self.basic_block_backward_pass(basic_block)
                 branch_last_block = basic_block.preds[1]
                 branch_last_block.live_set = basic_block.live_set - phi_lhs
-                self.basic_block_backward_pass(basic_block.preds[1])
+                self.build_interference_graph(branch_last_block)
             else:
-                return  # Stop when one of the predecessors are not visited yet.
+                # If-join block and branch block is not passed yet. Stop and restart from the other branch.
+                pass
 
-        if basic_block.type == ssa.BasicBlockType.IF_JOIN:
+        elif basic_block.type == ssa.BasicBlockType.IF_JOIN:
             phi_lhs, phi_rhs = self.basic_block_backward_pass(basic_block)
             basic_block.backward_pass_visited = True
             basic_block.preds[0].live_set -= phi_rhs
-            self.basic_block_backward_pass(basic_block.preds[0])  # will stop before the original block.
+            self.build_interference_graph(basic_block.preds[0])  # will stop before the original block.
             basic_block.preds[1].live_set -= phi_lhs
-            self.basic_block_backward_pass(basic_block.preds[1])  # will continue upwards
+            self.build_interference_graph(basic_block.preds[1])  # will continue upwards
 
         elif basic_block.type == ssa.BasicBlockType.WHILE_JOIN:
             phi_lhs, phi_rhs = self.basic_block_backward_pass(basic_block)
@@ -139,33 +143,21 @@ class RegisterAllocator:
             self.build_interference_graph(pred_block)
 
         else:
+            # If if-statements' original block, merge successors' live set.
+            if basic_block.branch_block and basic_block.fall_through_block:
+                basic_block.live_set |= basic_block.fall_through_block.live_set
+                basic_block.live_set |= basic_block.branch_block.live_set
+
+            # Pass current block
             self.basic_block_backward_pass(basic_block)
             basic_block.backward_pass_visited = True
+
+            # Iterate through the predecessor if exists.
             if basic_block.preds:
                 pred_block = basic_block.preds[0]
                 pred_block.live_set = basic_block.live_set
                 self.build_interference_graph(pred_block)
 
-        # # DFS while checking visited.
-        # if basic_block.type == ssa.BasicBlockType.WHILE_JOIN:
-        #     # pass fall-through branch
-        #     if basic_block.fall_through_block:
-        #         self.build_interference_graph(basic_block.fall_through_block)
-        #         basic_block.live_set = basic_block.fall_through_block.live_set
-        #
-        #     # If current block is a while-join block, pass current block
-        #     self.basic_block_backward_pass(basic_block)
-        #     basic_block.branch_block.live_set = basic_block.live_set - phi_lhs
-        #     basic_block.backward_pass_visited = True
-        #
-        #     # pass branch-block
-        #     if basic_block.branch_block:
-        #         self.build_interference_graph(basic_block.branch_block)
-        #         basic_block.live_set = basic_block.branch_block.live_set
-        #
-        #     # pass current block
-        #     self.basic_block_backward_pass(basic_block)
-        # basic_block.backward_pass_visited = True
 
     def basic_block_backward_pass(self, basic_block: ssa.BasicBlock):
         # Backward pass a basic block and add live values to the live set.
@@ -175,7 +167,7 @@ class RegisterAllocator:
         for instr in reversed(basic_block.instrs):
             # If there is no occurrence until it is removed,
             if instr.operation == ssa.Operation.PHI:
-                self.phis.append(instr)
+                self.phis[instr] = basic_block
                 lhs, rhs = instr.operands
                 if isinstance(lhs, ssa.InstructionOp):
                     phi_lhs.add(lhs.instr)
@@ -254,19 +246,28 @@ class RegisterAllocator:
         self.curr_color += 1
 
     def resolve_phis(self):
-        for phi in self.phis:
+        for phi, basic_block in self.phis.items():
             # Remove phi from the graph and replace it to a cluster node.
             if phi.i not in self.id_to_node:
                 self.id_to_node[phi.i] = InstructionNode(phi)
             cluster_node = ClusterNode(self.id_to_node[phi.i])
             self.id_to_node[phi.i] = cluster_node
 
-            for op in phi.operands:
+            for i, op in enumerate(phi.operands):
                 if isinstance(op, ssa.InstructionOp) and not op.instr.is_void:
                     op_node = self.id_to_node[op.instr.i]
                     if op_node not in cluster_node.adj_nodes:
+                        # Merge the node to the cluster.
                         cluster_node.merge(op_node)
                         self.id_to_node[op.instr.i] = cluster_node
-                    else:
-                        # Add a move instruction into the parent block
-                        pass
+
+    def remove_phis(self):
+        for phi, basic_block in self.phis.items():
+            for i, op in enumerate(phi.operands):
+                if isinstance(op, ssa.InstructionOp) and op.instr.register != phi.register:
+                    parent_block = basic_block.preds[i]
+                    instr_op = parent_block.emit(ssa.Operation.ADD, ssa.ImmediateOp(0), op)
+                    instr_op.instr.register = phi.register
+            phi.is_dead = True
+
+
