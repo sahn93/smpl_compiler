@@ -2,7 +2,6 @@ import re
 from typing import List, Tuple, Dict, Optional
 from enum import Enum
 from functools import reduce
-from copy import copy
 import os
 import ssa
 
@@ -168,8 +167,8 @@ class Parser:
             if self.curr.lexeme in [Lexeme.LET, Lexeme.CALL, Lexeme.IF, Lexeme.WHILE, Lexeme.RETURN]:
                 stat_op = self.statement()
                 if isinstance(stat_op, ssa.InstructionOp) and stat_op.instr.operation == ssa.Operation.BRA:
-                    self.ir.current_block.consume_dead_code = True
-        self.ir.current_block.consume_dead_code = False
+                    self.ir.current_block.consume_unreachable_instrs = True
+        self.ir.current_block.consume_unreachable_instrs = False
         if self.curr.lexeme == Lexeme.SEMICOLON:  # Last semicolon is optional.
             self.consume_if(Lexeme.SEMICOLON)
 
@@ -183,7 +182,7 @@ class Parser:
         elif self.curr.lexeme == Lexeme.WHILE:
             return self.while_statement()
         elif self.curr.lexeme == Lexeme.RETURN:
-            return self.return_statement()  # returns an InstructionOp
+            return self.return_statement()
         else:
             self.error(f"Expected statement, got {self.curr.lexeme.name}")
 
@@ -359,14 +358,14 @@ class Parser:
 
         if is_while:
             join_block.instrs = join_block.instrs[-num_phi_instr:] + join_block.instrs[:-num_phi_instr]
-            # Decrease all dominated blocks' num_hested_while_counter by 1.
+            # Decrease all dominated blocks' num_nested_while_counter by 1.
             while_dom_blocks = [left_parent_block]
             while while_dom_blocks:
                 block = while_dom_blocks.pop()
-                block.num_nested_while_counter -= 1
+                block.unresolved_num_nested_while_loops -= 1
                 while_dom_blocks += reversed(block.dominates)
                 # Confirm(Unwrap) VariableOps if all the while loop finishes.
-                if block.num_nested_while_counter == 0:
+                if block.unresolved_num_nested_while_loops == 0:
                     for instr in block.instrs:
                         for i, op in enumerate(instr.operands):
                             if isinstance(op, ssa.VariableOp):
@@ -427,7 +426,7 @@ class Parser:
     def while_statement(self):
         self.consume_if(Lexeme.WHILE)
         orig_block = self.ir.current_block
-        orig_block.num_nested_while_counter += 1
+        orig_block.unresolved_num_nested_while_loops += 1
 
         # Create a join block
         join_block = self.ir.get_new_basic_block(ssa.BasicBlockType.WHILE_JOIN)
@@ -445,6 +444,7 @@ class Parser:
         self.stat_sequence()
         branch_last_block = self.ir.current_block
         branch_last_block.fall_through_block = join_block
+        join_block.preds.append(branch_last_block)
 
         # Back to the join block and create the phi functions between the orig and join blocks
         self.add_phi_functions(join_block, orig_block, branch_last_block, is_while=True)
@@ -477,14 +477,12 @@ class Parser:
         elif rel_token.value == ">=":  # ble
             return self.ir.emit(ssa.Operation.BLE, cmp)
 
-    def return_statement(self) -> ssa.Operand:
+    def return_statement(self) -> None:
         self.consume_if(Lexeme.RETURN)
         if self.curr.lexeme in [Lexeme.IDENT, Lexeme.NUMBER, Lexeme.LPAREN, Lexeme.CALL]:
-            self.ir.current_block.decl_var("@reserved_memory_for_return")
-            self.ir.current_block.set_var_op("@reserved_memory_for_return", self.expression())
-            return self.ir.emit(ssa.Operation.BRA, ssa.VarAddressOp("R31(=Return Address)"))
+            self.ir.emit(ssa.Operation.STORE, self.expression(), ssa.VarAddressOp("Memory for Return"))
         else:
-            self.error()
+            self.ir.emit(ssa.Operation.BRA, ssa.VarAddressOp("R31(=Return Address)"))
 
     def add(self, lhs: ssa.Operand, rhs: ssa.Operand, is_adda=False) -> ssa.Operand:
         # Immediate Operation Optimization
