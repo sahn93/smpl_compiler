@@ -96,12 +96,6 @@ class RegisterAllocator:
             # Build an interference graph from the last block without resolving phis.
             self.build_interference_graph(root_block.func.last_block)
 
-            # Perform Dead Code Elimination if available.
-            for node in self.id_to_node.values():
-                if isinstance(node, InstructionNode) and node.cost == 0:
-                    if node.instr.operation not in ssa.void_operations + [ssa.Operation.CALL, ssa.Operation.PHI]:
-                        node.instr.is_dead = True
-
             # # Print graph for debugging.
             # for i, node in self.id_to_node.items():
             #     print(i, node, [str(adj_node) for adj_node in node.adj_nodes])
@@ -211,6 +205,10 @@ class RegisterAllocator:
                     live_node = self.id_to_node[live_instr.i]
                     instr_node.adj_nodes.add(live_node)
                     live_node.adj_nodes.add(instr_node)
+            else:
+                # Perform Dead Code Elimination if available.
+                if instr.operation not in ssa.void_operations + [ssa.Operation.CALL, ssa.Operation.PHI]:
+                    instr.is_dead = True
 
             # 3. Add operand values into the live set.
             if instr.operation == ssa.Operation.CALL:
