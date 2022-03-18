@@ -1,4 +1,4 @@
-from typing import List, Tuple, Dict, DefaultDict, Optional
+from typing import List, Tuple, Dict, DefaultDict, Optional, Set
 from enum import Enum
 from collections import defaultdict
 from copy import copy
@@ -15,9 +15,10 @@ class UninitializedVariableWarning(UserWarning):
 
 class BasicBlockType(Enum):
     FUNC_ROOT = "root"
-    FALL_THROUGH = "fall-through",
-    BRANCH = "branch",
-    JOIN = "join"
+    FALL_THROUGH = "fall-through"
+    BRANCH = "branch"
+    IF_JOIN = "if_join"
+    WHILE_JOIN = "while_join"
 
 
 class Operation(Enum):
@@ -43,6 +44,28 @@ class Operation(Enum):
     WRITE = "write"
     WRITE_NL = "writeNL"
     CALL = "call"
+
+
+no_cse_operations = [
+    Operation.READ,
+    Operation.WRITE,
+    Operation.WRITE_NL,
+    Operation.CALL
+]
+
+void_operations = [
+    Operation.STORE,
+    Operation.END,
+    Operation.BRA,
+    Operation.BNE,
+    Operation.BEQ,
+    Operation.BLE,
+    Operation.BLT,
+    Operation.BGE,
+    Operation.BGT,
+    Operation.WRITE,
+    Operation.WRITE_NL
+]
 
 
 class Operand:
@@ -89,18 +112,28 @@ class ImmediateOp(Operand):
 class Instruction:
     def __init__(self, i: int, operation: Optional[Operation], *operands: Operand):
         self.i: int = i
+        self.register: Optional[int] = None
+        self.is_void: bool = False
+        self.is_dead: bool = False
         self.instr_op = InstructionOp(self)
         self.operation: Operation = operation
         self.operands: List[Operand] = list(operands)
         self.dominator: Optional[Instruction] = None  # Previous instruction with the same kind
 
     def __str__(self):
-        if self.operation is None:
-            return f"{self.i}: <empty>"
-        elif self.operation == Operation.CALL:
-            return f"{self.i}: {str(self.operands[0])}"  # Operand is always a FuncCallOp.
+        if self.register:
+            if self.register > 32:
+                label = f"Virtual R{self.register - 32}"
+            else:
+                label = f"R{self.register}"
         else:
-            return f"{self.i}: {self.operation.value} {' '.join([str(op) for op in self.operands])}"
+            label = self.i
+        if self.operation is None:
+            return f"{label}: <empty>"
+        elif self.operation == Operation.CALL:
+            return f"{label}: {str(self.operands[0])}"  # Operand is always a FuncCallOp.
+        else:
+            return f"{label}: {self.operation.value} {' '.join([str(op) for op in self.operands])}"
 
     def __eq__(self, other):
         return (isinstance(other, Instruction) and
@@ -108,13 +141,22 @@ class Instruction:
                 len(self.operands) == len(other.operands) and
                 all([l == r for (l, r) in zip(self.operands, other.operands)]))
 
+    def __hash__(self):
+        return self.i
+
 
 class InstructionOp(Operand):
     def __init__(self, instr: Instruction):
         self.instr = instr
 
     def __str__(self):
-        return f"({self.instr.i})"
+        if self.instr.register:
+            if self.instr.register > 32:
+                return f"Virtual R{self.instr.register - 32}"
+            else:
+                return f"R{self.instr.register}"
+        else:
+            return f"({self.instr.i})"
 
     def __eq__(self, other):
         return isinstance(other, InstructionOp) and self.instr.i == other.instr.i
@@ -127,6 +169,7 @@ class Function:
         self.instr_counter = 0
         self.block_counter = 0  # A function's root block
         self.is_void = is_void
+        self.last_block = None
 
     def get_basic_block_id(self):
         self.block_counter += 1
@@ -165,15 +208,19 @@ class BasicBlock:
                  sym_table: Dict[str, Optional[Variable]],
                  instr_dominators: DefaultDict[Operation, List[Instruction]],
                  basic_block_type: BasicBlockType,
-                 num_nested_while_counter: int = 0):
+                 unresolved_num_nested_while_loops: int = 0):
+        self.backward_pass_visited = False
+        self.live_set: Set[Instruction] = set()
         self.type = basic_block_type
-        self.consume_dead_code = False
-        self.num_nested_while_counter = num_nested_while_counter
+        self.consume_unreachable_instrs = False
+        self.unresolved_num_nested_while_loops = unresolved_num_nested_while_loops
+        self.factor = pow(10, unresolved_num_nested_while_loops)
         self.func: Function = func
         self.basic_block_id: int = func.get_basic_block_id()
         self.instrs: List[Instruction] = []
         self.branch_block: Optional[BasicBlock] = None
         self.fall_through_block: Optional[BasicBlock] = None
+        self.preds: List[BasicBlock] = []
         self.dominates: List[BasicBlock] = []
         self.sym_table: Dict[str, Optional[Variable]] = {}
         for ident, var in sym_table.items():
@@ -194,7 +241,7 @@ class BasicBlock:
             raise Exception(f"{ident} is not declared in {self.func.name}.")
 
         # Wrap by VariableOp if the variable is nested by while loops and the value can be changed.
-        if self.num_nested_while_counter > 0 and not isinstance(self.sym_table[ident].operand, VariableOp):
+        if self.unresolved_num_nested_while_loops > 0 and not isinstance(self.sym_table[ident].operand, VariableOp):
             self.sym_table[ident].operand = VariableOp(ident, self.sym_table[ident].operand)
 
         return self.sym_table[ident]
@@ -228,8 +275,14 @@ class BasicBlock:
         return dotgraph_blocks + [''] + dotgraph_branches + dotgraph_doms
 
     def dot_node(self, subgraph_prefix: str = ""):
-        join = "join\\n" if self.type == BasicBlockType.JOIN else ""
-        instrs = "|".join([str(instr) for instr in self.instrs])
+        join = ""
+        if self.type in [BasicBlockType.IF_JOIN, BasicBlockType.WHILE_JOIN]:
+            join = f"{self.type.value}\\n"
+        live_instr = []
+        for instr in self.instrs:
+            if not instr.is_dead:
+                live_instr.append(instr)
+        instrs = "|".join([str(instr) for instr in live_instr])
         label = f"<b>{join}BB{self.basic_block_id}| {{{instrs}}}"
         dot_block = f'\t{subgraph_prefix}bb{self.basic_block_id} [shape=record, label="{label}"];'
 
@@ -254,9 +307,15 @@ class BasicBlock:
 
     def emit(self, operation: Operation, *operands: Operand) -> InstructionOp:
         instr = Instruction(self.func.get_instr_id(), operation, *operands)
+        if operation in void_operations:
+            instr.is_void = True
+        if operation == Operation.CALL:
+            func_call_op = operands[0]
+            if isinstance(func_call_op, FuncCallOp):
+                instr.is_void = func_call_op.func.is_void
 
         # Common Subexpression Elimination
-        if operation not in [Operation.READ, Operation.WRITE, Operation.WRITE_NL]:
+        if operation not in no_cse_operations:
             for dom_instr in reversed(self.instr_dominators[operation]):
                 if dom_instr.operation == Operation.STORE:
                     break  # For load operation, forget everything before the store operation
@@ -265,7 +324,7 @@ class BasicBlock:
                     return dom_instr.instr_op
 
         # There is no common subexpression -> Add instruction
-        if not self.consume_dead_code:
+        if not self.consume_unreachable_instrs:
             self.instrs.append(instr)
             if operation not in [Operation.READ, Operation.WRITE, Operation.WRITE_NL]:
                 self.instr_dominators[operation].append(instr)
@@ -303,11 +362,17 @@ class SSA:
         self.builtin_funcs: List[str] = ["InputNum", "OutputNum", "OutputNewLine"]
         # Add built-in functions
         input_num_block = self.get_new_function_block("InputNum", [])
-        input_num_block.emit(Operation.READ)
+        read_op = input_num_block.emit(Operation.READ)
+        input_num_block.emit(Operation.STORE, read_op, VarAddressOp("Memory for Return"))
+        input_num_block.emit(Operation.BRA, VarAddressOp("R31(=Return Address)"))
+
         output_num_block = self.get_new_function_block("OutputNum", ['x'])
         output_num_block.emit(Operation.WRITE, output_num_block.sym_table['x'].operand)
+        output_num_block.emit(Operation.BRA, VarAddressOp("R31(=Return Address)"))
+
         output_newline_block = self.get_new_function_block("OutputNewLine", [])
         output_newline_block.emit(Operation.WRITE_NL)
+        output_newline_block.emit(Operation.BRA, VarAddressOp("R31(=Return Address)"))
 
     def emit(self, operation: Operation, *operands: Operand) -> InstructionOp:
         return self.current_block.emit(operation, *operands)
@@ -337,18 +402,21 @@ class SSA:
                 func_root_bb.sym_table[operand_name].operand = VarAddressOp(operand_name)
                 func_root_bb.sym_table[operand_name].operand = \
                     func_root_bb.emit(Operation.LOAD, func_root_bb.sym_table[operand_name].operand)
+        func.last_block = func_root_bb
         return func_root_bb
 
     def get_new_basic_block(self,
                             basic_block_type: BasicBlockType):
         new_bb = BasicBlock(self.current_func, self.current_block.sym_table,
                             self.current_block.instr_dominators, basic_block_type,
-                            self.current_block.num_nested_while_counter)
+                            self.current_block.unresolved_num_nested_while_loops)
         if basic_block_type == BasicBlockType.FALL_THROUGH:
             self.current_block.fall_through_block = new_bb
         elif basic_block_type == BasicBlockType.BRANCH:
             self.current_block.branch_block = new_bb
+        new_bb.preds.append(self.current_block)
         self.current_block.dominates.append(new_bb)
+        self.current_func.last_block = new_bb
         return new_bb
 
     def dot(self) -> str:
@@ -374,22 +442,25 @@ class SSA:
 
 
 class FuncCallOp(Operand):
-    def __init__(self, ir: SSA, ident: str, *operands: Operand):
+    def __init__(self, ir: SSA, ident: str, *args: Operand):
         if ident not in ir.func_roots:
             raise SSACompileError(f"function {ident} is not declared.")
-        func_operands = ir.func_roots[ident].func.arg_names
-        if len(func_operands) != len(operands):
+
+        self.func = ir.func_roots[ident].func
+        func_operands = self.func.arg_names
+
+        if len(func_operands) != len(args):
             raise SSACompileError(f"function {ident}({', '.join(func_operands)})"
-                                  f" expects {len(func_operands)} operands, but got {len(operands)}.")
+                                  f" expects {len(func_operands)} operands, but got {len(args)}.")
         self.ident = ident
-        self.operands: Tuple[Operand] = operands
+        self.args: Tuple[Operand] = args
 
     def __str__(self):
         if self.ident == Operation.READ:
             return "read"
         elif self.ident == Operation.WRITE:
-            return f"write {str(self.operands[0])}"
+            return f"write {str(self.args[0])}"
         elif self.ident == Operation.WRITE_NL:
             return "writeNL"
         else:
-            return f"{self.ident}({', '.join([str(op) for op in self.operands])})"
+            return f"{self.ident}({', '.join([str(op) for op in self.args])})"

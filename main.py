@@ -2,6 +2,7 @@
 import argparse
 from parser import Parser
 from ssa import SSA
+from register_allocator import RegisterAllocator
 
 
 class Result:
@@ -16,9 +17,15 @@ def main():
     args = parser.parse_args()
 
     ir = SSA()
+
     smpl_parser = Parser(args.smpl, ir)
     smpl_parser.parse()
     print(ir.dot())
+
+    # register_allocator = RegisterAllocator(ir)
+    # register_allocator.allocate_registers()
+    #
+    # print(ir.dot())
 
 
 if __name__ == "__main__":
