@@ -3,7 +3,7 @@ var row, col;
 array[3][3] arr;
 {
     let row <- 0;
-    let col <- 0;
+    let col <- 1;
     while row < 3 do
         while col < 3 do
             let arr[row][col] <- 7;

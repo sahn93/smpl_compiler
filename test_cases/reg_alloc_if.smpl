@@ -1,0 +1,10 @@
+main
+var a, b, c, d, e; {
+    let a <- call InputNum();
+    if a < 0 then
+        let a <- 1
+    else
+        let a <- 4
+    fi;
+    call OutputNum(a)
+}.

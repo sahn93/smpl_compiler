@@ -49,9 +49,14 @@ class ClusterNode(Node):
             self.instr_nodes: Set[InstructionNode] = {phi_node}
         else:
             raise TypeError
-
         # Override phi_node's edges
         self.merge(phi_node)
+
+    def __hash__(self):
+        return -min([hash(instr_node) for instr_node in self.instr_nodes])
+
+    def __eq__(self, other):
+        return isinstance(other, ClusterNode) and self.instr_nodes == other.instr_nodes
 
     def merge(self, node: Node):
         self.cost += node.cost
@@ -61,7 +66,6 @@ class ClusterNode(Node):
             self.instr_nodes.add(node)
         else:
             raise TypeError
-
         for adj_node in node.adj_nodes:
             adj_node.adj_nodes.discard(node)
             adj_node.adj_nodes.add(self)
@@ -76,7 +80,7 @@ class RegisterAllocator:
 
     def __init__(self, ir: ssa.SSA):
         self.ir = ir
-        self.phis: Dict[ssa.Instruction, ssa.BasicBlock] = dict()
+        self.phis: Dict[ssa.Instruction, ssa.BasicBlock] = {}
         self.id_to_node: Dict[int, Node] = {}
         self.nodes_min_heap: List[Node] = []
         heapify(self.nodes_min_heap)
@@ -92,8 +96,15 @@ class RegisterAllocator:
             # Build an interference graph from the last block without resolving phis.
             self.build_interference_graph(root_block.func.last_block)
 
+            # Perform Dead Code Elimination if available.
+            for node in self.id_to_node.values():
+                if isinstance(node, InstructionNode) and node.cost == 0:
+                    if node.instr.operation not in ssa.void_operations + [ssa.Operation.CALL, ssa.Operation.PHI]:
+                        node.instr.is_dead = True
+
+            # # Print graph for debugging.
             # for i, node in self.id_to_node.items():
-            #     print(node, [str(adj_node) for adj_node in node.adj_nodes])
+            #     print(i, node, [str(adj_node) for adj_node in node.adj_nodes])
 
             # Resolve all phi functions
             self.resolve_phis()
@@ -103,6 +114,7 @@ class RegisterAllocator:
                 if node not in self.nodes_min_heap:
                     heappush(self.nodes_min_heap, node)
 
+            # # Print graph for debugging.
             # print("After phi-resolving")
             # for node in self.nodes_min_heap:
             #     print(node, ", adj: ", [str(adj_node) for adj_node in node.adj_nodes])
@@ -114,7 +126,7 @@ class RegisterAllocator:
             self.remove_phis()
 
             # Init for the next function
-            self.phis = dict()
+            self.phis = {}
             self.id_to_node = {}
             self.nodes_min_heap = []
             heapify(self.nodes_min_heap)
@@ -166,11 +178,18 @@ class RegisterAllocator:
                 pred_block.live_set = basic_block.live_set
                 self.build_interference_graph(pred_block)
 
-
     def basic_block_backward_pass(self, basic_block: ssa.BasicBlock):
         # Backward pass a basic block and add live values to the live set.
         phi_lhs: Set[ssa.Instruction] = set()
         phi_rhs: Set[ssa.Instruction] = set()
+
+        # Move immediate values in phi functions to the registers in the parent block.
+        for instr in basic_block.instrs:
+            if instr.operation != ssa.Operation.PHI:
+                break
+            for i, op in enumerate(instr.operands):
+                if isinstance(op, ssa.ImmediateOp):
+                    instr.operands[i] = basic_block.preds[i].emit(ssa.Operation.ADD, ssa.ImmediateOp(0), op)
 
         for instr in reversed(basic_block.instrs):
             # If there is no occurrence until it is removed,
@@ -182,11 +201,7 @@ class RegisterAllocator:
                 if isinstance(rhs, ssa.InstructionOp):
                     phi_rhs.add(rhs.instr)
 
-            if instr.i not in self.id_to_node:
-                # If it is eliminable -> perform Dead Code Elimination.
-                if instr.operation not in ssa.void_operations + [ssa.Operation.CALL, ssa.Operation.PHI]:
-                    instr.is_dead = True
-            else:
+            if instr.i in self.id_to_node:
                 # 1. Discard this instruction from the live set and the graph.
                 basic_block.live_set.discard(instr)
 
@@ -240,6 +255,7 @@ class RegisterAllocator:
             adj_node.adj_nodes.add(min_node)
 
         if self.curr_color < Register.FRAME_POINTER.value:
+            # print(f"Assign R{self.curr_color} to the {min_node}")
             min_node.color = self.curr_color  # Assign a register if color is less than 28 (Frame Pointer)
         else:
             min_node.color = self.curr_color + 5  # colors start from 32 are for virtual registers.
@@ -277,5 +293,3 @@ class RegisterAllocator:
                     instr_op = parent_block.emit(ssa.Operation.ADD, ssa.ImmediateOp(0), op)
                     instr_op.instr.register = phi.register
             phi.is_dead = True
-
-
