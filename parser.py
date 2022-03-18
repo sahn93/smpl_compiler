@@ -161,14 +161,13 @@ class Parser:
         self.ir.emit(ssa.Operation.END)
 
     def stat_sequence(self):
-        self.statement()
+        stat_op = self.statement()
         while self.curr.lexeme == Lexeme.SEMICOLON:
+            if isinstance(stat_op, ssa.InstructionOp) and stat_op.instr.operation == ssa.Operation.BRA:
+                self.ir.current_block.consume_unreachable_instrs = True
             self.consume_if(Lexeme.SEMICOLON)
             if self.curr.lexeme in [Lexeme.LET, Lexeme.CALL, Lexeme.IF, Lexeme.WHILE, Lexeme.RETURN]:
                 stat_op = self.statement()
-                if isinstance(stat_op, ssa.InstructionOp) and stat_op.instr.operation == ssa.Operation.BRA:
-                    self.ir.current_block.consume_unreachable_instrs = True
-        self.ir.current_block.consume_unreachable_instrs = False
         if self.curr.lexeme == Lexeme.SEMICOLON:  # Last semicolon is optional.
             self.consume_if(Lexeme.SEMICOLON)
 
@@ -483,12 +482,11 @@ class Parser:
         elif rel_token.value == ">=":  # ble
             return self.ir.emit(ssa.Operation.BLE, cmp)
 
-    def return_statement(self) -> None:
+    def return_statement(self) -> ssa.InstructionOp:
         self.consume_if(Lexeme.RETURN)
         if self.curr.lexeme in [Lexeme.IDENT, Lexeme.NUMBER, Lexeme.LPAREN, Lexeme.CALL]:
             self.ir.emit(ssa.Operation.STORE, self.expression(), ssa.VarAddressOp("Memory for Return"))
-        else:
-            self.ir.emit(ssa.Operation.BRA, ssa.VarAddressOp("R31(=Return Address)"))
+        return self.ir.emit(ssa.Operation.BRA, ssa.VarAddressOp("R31(=Return Address)"))
 
     def add(self, lhs: ssa.Operand, rhs: ssa.Operand, is_adda=False) -> ssa.Operand:
         # Immediate Operation Optimization
