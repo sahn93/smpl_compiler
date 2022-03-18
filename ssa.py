@@ -123,7 +123,7 @@ class Instruction:
     def __str__(self):
         if self.register:
             if self.register > 32:
-                label = f"Virtual R{self.register - 32}"
+                label = f"Load virtual R{self.register - 32}"
             else:
                 label = f"R{self.register}"
         else:

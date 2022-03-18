@@ -11,6 +11,7 @@ class Register(Enum):
     GLOBAL_VAR_POINTER = 30
     STACK_POINTER = 29
     FRAME_POINTER = 28
+    MEM_SWAP_REGISTER = 27
 
 
 class Node:
@@ -252,9 +253,9 @@ class RegisterAllocator:
         for adj_node in min_node.adj_nodes:  # Restore the edges
             adj_node.adj_nodes.add(min_node)
 
-        if self.curr_color < Register.FRAME_POINTER.value:
+        if self.curr_color < Register.MEM_SWAP_REGISTER.value:
             # print(f"Assign R{self.curr_color} to the {min_node}")
-            min_node.color = self.curr_color  # Assign a register if color is less than 28 (Frame Pointer)
+            min_node.color = self.curr_color  # Assign a register if color is less than 27 (Memory swap register)
         else:
             min_node.color = self.curr_color + 5  # colors start from 32 are for virtual registers.
 
