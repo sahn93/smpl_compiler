@@ -47,13 +47,21 @@ class ClusterNode(Node):
             self.instr_nodes: Set[InstructionNode] = phi_node.instr_nodes
         elif isinstance(phi_node, InstructionNode):
             self.instr_nodes: Set[InstructionNode] = {phi_node}
+        else:
+            raise TypeError
 
         # Override phi_node's edges
         self.merge(phi_node)
 
     def merge(self, node: Node):
         self.cost += node.cost
-        self.instr_nodes.add(node)
+        if isinstance(node, ClusterNode):
+            self.instr_nodes |= node.instr_nodes
+        elif isinstance(node, InstructionNode):
+            self.instr_nodes.add(node)
+        else:
+            raise TypeError
+
         for adj_node in node.adj_nodes:
             adj_node.adj_nodes.discard(node)
             adj_node.adj_nodes.add(self)
@@ -61,7 +69,7 @@ class ClusterNode(Node):
         return self
 
     def __str__(self):
-        return f"Cluster {[str(instr_node) for instr_node in self.instr_nodes]}"
+        return f"Cluster: {', '.join([str(instr_node) for instr_node in self.instr_nodes])}"
 
 
 class RegisterAllocator:
