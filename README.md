@@ -2,7 +2,8 @@ SMPL Compiler
 =============
 
 Smpl is a simple programming language used in the COMPSCI 241 Advanced Compiler Design class by Prof. Michael Franz at UC Irvine.
-This is a compiler for SMPL with several optimization techniques.
+
+This is a compiler for SMPL with several optimization techniques and visualization using [DOT language](https://graphviz.org/doc/info/lang.html).
 
 # Components
 
