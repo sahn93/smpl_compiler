@@ -9,19 +9,19 @@ This is a compiler for SMPL with several optimization techniques and visualizati
 
 ## Frontend
 
-- Parser directly generate IR in SSA form
-- Optimizations:
-  - Global Value Numbering
-  - Common Subexpression Elimination
-  - Constant Folding
-  - Dead Code Elimination
+- Parser directly generate IR in Static single-assignment (SSA) form.
 
 ## Backend
 
+- Optimizations:
+  - Global Value Numbering (GVN)
+  - Common Subexpression Elimination (CSE)
+  - Constant Folding
+  - Dead Code Elimination (DCE)
 - Register Allocator (use 32 Registers and spill to the memory)
 - Optimizations:
   - Graph Coloring
-  - Dead Code Elimination
+  - Dead Code Elimination (DCE)
 
 # Example
 
